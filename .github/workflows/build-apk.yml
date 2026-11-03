@@ -27,7 +27,7 @@ jobs:
           cp keystore/debug.keystore ~/.android/debug.keystore
 
       - name: Buat kerangka proyek Android
-        run: flutter create --platforms=android --project-name Pawoen Langgananku --org com.kedai build_app
+        run: flutter create --platforms=android --project-name kedai_pos --org com.kedai build_app
 
       - name: Izin Bluetooth untuk printer kasir
         run: |
