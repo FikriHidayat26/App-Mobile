@@ -29,6 +29,10 @@ jobs:
       - name: Buat kerangka proyek Android
         run: flutter create --platforms=android --project-name kedai_pos --org com.kedai build_app
 
+      - name: Ubah nama aplikasi
+        run: |
+          sed -i 's/android:label="[^"]*"/android:label="Kasir Pawoen Langgananku"/' build_app/android/app/src/main/AndroidManifest.xml
+
       - name: Izin Bluetooth untuk printer kasir
         run: |
           M=build_app/android/app/src/main/AndroidManifest.xml
