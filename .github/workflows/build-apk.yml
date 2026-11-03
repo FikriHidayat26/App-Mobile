@@ -50,7 +50,12 @@ jobs:
 
       - name: Build APK (release)
         working-directory: build_app
-        run: flutter build apk --release
+        run: flutter build apk --release --build-number=${{ github.run_number }}
+
+      - name: Cek tanda tangan APK
+        run: |
+          BT=$ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)
+          $BT/apksigner verify --print-certs build_app/build/app/outputs/flutter-apk/app-release.apk | grep "SHA-256"
 
       - uses: actions/upload-artifact@v4
         with:
