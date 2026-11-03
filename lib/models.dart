@@ -271,36 +271,40 @@ class RingkasTransaksi {
 }
 
 String _kanan(String kiri, String kanan, {int lebar = 32}) {
+  // Nama terlalu panjang dipotong agar harga di kanan tetap utuh dalam satu baris.
+  final maks = lebar - kanan.length - 1;
+  if (kiri.length > maks) kiri = maks > 0 ? kiri.substring(0, maks) : '';
   final sisa = lebar - kiri.length - kanan.length;
   return '$kiri${' ' * (sisa > 1 ? sisa : 1)}$kanan';
 }
 
-String teksStruk(Struk s, {String namaKedai = 'KEDAI SEBLAK', int? bayar}) {
+String teksStruk(Struk s,
+    {String namaKedai = 'KEDAI SEBLAK', int? bayar, int lebar = 32, String footer = 'Terima kasih!'}) {
   final b = StringBuffer();
   b.writeln(namaKedai);
   b.writeln('No   : ${s.noNota}');
   b.writeln('Waktu: ${s.waktu}');
   b.writeln('Bayar: ${s.metode}${s.status == 'VOID' ? '  [VOID]' : ''}');
-  b.writeln('-' * 32);
+  b.writeln('-' * lebar);
   for (final it in s.items) {
-    b.writeln(_kanan('${it.qty}x ${it.nama}', rupiah(it.hargaSatuan * it.qty)));
+    b.writeln(_kanan('${it.qty}x ${it.nama}', rupiah(it.hargaSatuan * it.qty), lebar: lebar));
     final hapus = it.topping.where((t) => t.jenis == 'HAPUS').map((t) => t.nama);
     if (hapus.isNotEmpty) b.writeln('   Tanpa: ${hapus.join(', ')}');
     for (final t in it.topping.where((t) => t.jenis != 'HAPUS')) {
-      b.writeln(_kanan('   + ${t.nama} x${t.pick}', rupiah(t.harga * it.qty)));
+      b.writeln(_kanan('   + ${t.nama} x${t.pick}', rupiah(t.harga * it.qty), lebar: lebar));
     }
     if (it.levelPedas != null) b.writeln('   Pedas: ${it.levelPedas}');
     if (it.kuah != null) b.writeln('   Kuah : ${it.kuah}');
     if (it.rasa != null) b.writeln('   Rasa : ${it.rasa}');
     if ((it.catatan ?? '').trim().isNotEmpty) b.writeln('   Cat  : ${it.catatan}');
   }
-  b.writeln('-' * 32);
-  b.writeln(_kanan('TOTAL', rupiah(s.total)));
+  b.writeln('-' * lebar);
+  b.writeln(_kanan('TOTAL', rupiah(s.total), lebar: lebar));
   if (bayar != null && s.metode == 'TUNAI') {
-    b.writeln(_kanan('Bayar', rupiah(bayar)));
-    b.writeln(_kanan('Kembali', rupiah(bayar - s.total)));
+    b.writeln(_kanan('Bayar', rupiah(bayar), lebar: lebar));
+    b.writeln(_kanan('Kembali', rupiah(bayar - s.total), lebar: lebar));
   }
-  b.writeln('Terima kasih!');
+  if (footer.trim().isNotEmpty) b.writeln(footer.trim());
   return b.toString();
 }
 

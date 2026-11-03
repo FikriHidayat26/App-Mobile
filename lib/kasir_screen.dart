@@ -7,6 +7,7 @@ import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'helpers.dart';
 import 'models.dart';
 import 'pos_repository.dart';
+import 'printer_service.dart';
 
 class KasirScreen extends StatefulWidget {
   final PosRepository repo;
@@ -246,7 +247,7 @@ class _KasirScreenState extends State<KasirScreen> {
       setState(_cart.clear);
       await _muat(); // stok terbaru
       if (!mounted) return;
-      await tampilkanStruk(context, widget.repo, hasil.id, bayar: bayar);
+      await tampilkanStruk(context, widget.repo, hasil.id, bayar: bayar, autoCetak: true);
     } on StokTidakCukupException catch (e) {
       if (!mounted) return;
       await _dialogInfo('Stok tidak cukup', e.detail.join('\n'));
@@ -653,6 +654,7 @@ Future<void> tampilkanStruk(
   int id, {
   int? bayar,
   bool bisaVoid = false,
+  bool autoCetak = false,
   VoidCallback? onVoid,
 }) async {
   final Struk s;
@@ -663,7 +665,14 @@ Future<void> tampilkanStruk(
     return;
   }
   if (!context.mounted) return;
-  final teks = teksStruk(s, bayar: bayar);
+  final cfg = await PrinterService.instance.muatPengaturan(repo);
+  final teks = teksStruk(s,
+      namaKedai: cfg.namaKedai, lebar: cfg.lebar, footer: cfg.footer, bayar: bayar);
+  if (autoCetak && cfg.otomatis && cfg.mac.isNotEmpty) {
+    final err = await PrinterService.instance.cetak(repo, teks);
+    if (context.mounted) snack(context, err ?? 'Struk dicetak');
+  }
+  if (!context.mounted) return;
   await showDialog<void>(
     context: context,
     builder: (ctx) => AlertDialog(
@@ -700,6 +709,13 @@ Future<void> tampilkanStruk(
             },
             child: const Text('Void', style: TextStyle(color: Colors.red)),
           ),
+        TextButton(
+          onPressed: () async {
+            final err = await PrinterService.instance.cetak(repo, teks);
+            if (ctx.mounted) snack(ctx, err ?? 'Struk dicetak');
+          },
+          child: const Text('Cetak'),
+        ),
         TextButton(
           onPressed: () async {
             await Clipboard.setData(ClipboardData(text: teks));

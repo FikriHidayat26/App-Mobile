@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'helpers.dart';
 import 'models.dart';
 import 'pos_repository.dart';
+import 'printer_screen.dart';
 
 double? _angka(String s) => double.tryParse(s.trim().replaceAll(',', '.'));
 int? _bulat(String s) => int.tryParse(s.trim().replaceAll('.', ''));
@@ -16,7 +17,7 @@ class ManajemenScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 4,
+      length: 5,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Kelola Menu & Bahan'),
@@ -25,6 +26,7 @@ class ManajemenScreen extends StatelessWidget {
             Tab(text: 'Bahan'),
             Tab(text: 'Kulak'),
             Tab(text: 'Audit'),
+            Tab(text: 'Printer'),
           ]),
         ),
         body: TabBarView(children: [
@@ -32,6 +34,7 @@ class ManajemenScreen extends StatelessWidget {
           BahanTab(repo: repo),
           KulakTab(repo: repo),
           AuditTab(repo: repo),
+          PrinterTab(repo: repo),
         ]),
       ),
     );

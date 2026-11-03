@@ -221,6 +221,19 @@ class PosRepository {
 
   // =============================================================== PENGATURAN
 
+  Future<String?> getPengaturan(String kunci) async {
+    final database = await _db;
+    final r = await database.query('pengaturan',
+        columns: ['nilai'], where: 'kunci = ?', whereArgs: [kunci]);
+    return r.isEmpty ? null : r.first['nilai'] as String;
+  }
+
+  Future<void> setPengaturan(String kunci, String nilai) async {
+    final database = await _db;
+    await database.insert('pengaturan', {'kunci': kunci, 'nilai': nilai},
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
   Future<int> biayaDasarPrasmanan() async {
     final database = await _db;
     final r = await database.query('pengaturan',
