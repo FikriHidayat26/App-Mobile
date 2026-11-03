@@ -19,7 +19,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: "3.27.4"
+          flutter-version: "3.24.5"
 
       - name: Pasang keystore tetap
         run: |
@@ -28,6 +28,14 @@ jobs:
 
       - name: Buat kerangka proyek Android
         run: flutter create --platforms=android --project-name kedai_pos --org com.kedai build_app
+
+      - name: Izin Bluetooth untuk printer kasir
+        run: |
+          M=build_app/android/app/src/main/AndroidManifest.xml
+          for P in BLUETOOTH BLUETOOTH_ADMIN BLUETOOTH_CONNECT BLUETOOTH_SCAN; do
+            sed -i "/<application/i\\    <uses-permission android:name=\"android.permission.$P\" />" "$M"
+          done
+          grep -n "uses-permission" "$M"
 
       - name: Salin kode aplikasi
         run: |
