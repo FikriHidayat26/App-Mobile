@@ -11,6 +11,8 @@ dependencies:
     sdk: flutter
   sqflite: ^2.3.3
   path: ^1.9.0
+  print_bluetooth_thermal: ^1.1.4
+  permission_handler: ^11.3.1
 
 dev_dependencies:
   flutter_test:
