@@ -1,7 +1,7 @@
 // models.dart — model data, konstanta pilihan, dan format struk.
 
 const List<String> kSatuanDasar = [
-  'kg', 'gram', 'ons', 'buah', 'biji', 'ikat', 'pack', 'bungkus',
+  'kg', 'gram', 'ons', 'buah', 'biji', 'ikat', 'pcs','pack', 'bungkus',
   'keping', 'porsi', 'ml', 'liter', 'saset', 'siung', 'lembar',
 ];
 
