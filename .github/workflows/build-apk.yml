@@ -22,16 +22,26 @@ jobs:
           flutter-version: "3.24.5"
 
       - name: Pasang keystore tetap
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
           mkdir -p ~/.android
-          cp keystore/debug.keystore ~/.android/debug.keystore
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > ~/.android/debug.keystore
+            echo "Memakai keystore dari GitHub Secret KEYSTORE_BASE64"
+          else
+            cp keystore/debug.keystore ~/.android/debug.keystore
+            echo "Memakai keystore dari folder keystore/"
+          fi
+          if ! keytool -list -v -keystore ~/.android/debug.keystore -storepass android > /tmp/ks.txt 2>&1; then
+            cat /tmp/ks.txt
+            echo "::error::Keystore RUSAK / tidak terbaca (biasanya karena file biner ditempel sebagai teks). Unggah ulang lewat Add file > Upload files. Tanpa keystore tetap, APK baru tidak akan bisa menimpa aplikasi lama."
+            exit 1
+          fi
+          grep -E "Alias|Owner|SHA256" /tmp/ks.txt
 
       - name: Buat kerangka proyek Android
         run: flutter create --platforms=android --project-name kedai_pos --org com.kedai build_app
-
-      - name: Ubah nama aplikasi
-        run: |
-          sed -i 's/android:label="[^"]*"/android:label="Kasir Pawoen Langgananku"/' build_app/android/app/src/main/AndroidManifest.xml
 
       - name: Izin Bluetooth untuk printer kasir
         run: |
@@ -52,20 +62,27 @@ jobs:
         working-directory: build_app
         run: flutter pub get
 
-      - name: Buat ikon aplikasi
-        working-directory: build_app
-        run: dart run flutter_launcher_icons
-
       - name: Build APK (release)
         working-directory: build_app
-        run: flutter build apk --release --build-number=${{ github.run_number }}
-
-      - name: Cek tanda tangan APK
-        run: |
-          BT=$ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)
-          $BT/apksigner verify --print-certs build_app/build/app/outputs/flutter-apk/app-release.apk | grep "SHA-256"
+        run: flutter build apk --release
 
       - uses: actions/upload-artifact@v4
         with:
           name: kedai-pos-apk
           path: build_app/build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Cek tanda tangan APK (harus sama dengan aplikasi lama)
+        run: |
+          mkdir -p /tmp/sig && cd /tmp/sig
+          unzip -o -q "$GITHUB_WORKSPACE/build_app/build/app/outputs/flutter-apk/app-release.apk" 'META-INF/*.RSA' 'META-INF/*.EC' 'META-INF/*.DSA' || true
+          SHA=""
+          for f in META-INF/*.RSA META-INF/*.EC META-INF/*.DSA; do
+            [ -f "$f" ] && SHA=$(keytool -printcert -file "$f" | grep "SHA256:" | head -1 | sed 's/.*SHA256: *//')
+          done
+          echo "SHA-256 tanda tangan APK ini: $SHA"
+          LAMA="78:C2:33:DF:AD:CA:13:71:5A:77:0F:DC:56:0B:3A:EC:05:A5:F5:3E:6E:43:51:2B:BC:1A:3C:7E:76:A1:C2:25"
+          if [ "$SHA" = "$LAMA" ]; then
+            echo "SAMA dengan APK lama: aman dipasang menimpa tanpa uninstall, data tetap."
+          else
+            echo "::warning::Tanda tangan BERBEDA dari APK lama (78:C2:33...). Android akan menolak menimpa aplikasi lama (paket bentrok)."
+          fi
