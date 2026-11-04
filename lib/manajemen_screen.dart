@@ -2,6 +2,7 @@
 // pengaturan prasmanan, satuan beli), Kulak (pembelian), Audit (cek selisih stok & keuangan).
 import 'package:flutter/material.dart';
 
+import 'backup_screen.dart';
 import 'helpers.dart';
 import 'hpp_screen.dart';
 import 'models.dart';
@@ -22,6 +23,14 @@ class ManajemenScreen extends StatelessWidget {
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Kelola Menu & Bahan'),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.backup_outlined),
+              tooltip: 'Cadangan data',
+              onPressed: () => Navigator.push(
+                  context, MaterialPageRoute(builder: (_) => const BackupScreen())),
+            ),
+          ],
           bottom: const TabBar(isScrollable: true, tabs: [
             Tab(text: 'Menu'),
             Tab(text: 'HPP'),
