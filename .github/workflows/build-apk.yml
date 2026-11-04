@@ -78,7 +78,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: pawon-apk
-          path: build_app/build/app/outputs/flutter-apk/pawon-release.apk
+          path: build_app/build/app/outputs/flutter-apk/app-release.apk
 
       - name: Cek tanda tangan APK (harus sama dengan aplikasi lama)
         run: |
