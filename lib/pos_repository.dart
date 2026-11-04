@@ -28,7 +28,75 @@ class PosRepository {
   static final PosRepository instance = PosRepository._();
   factory PosRepository() => instance;
 
-  Future<Database> get _db => DatabaseHelper.instance.database;
+  // Database dibuka lewat DatabaseHelper, lalu skema biaya tetap dicek/diperbarui
+  // otomatis (idempotent, tanpa perlu menaikkan versi database).
+  Future<Database>? _dbSiap;
+  Future<Database> get _db => _dbSiap ??= _bukaDb();
+
+  Future<Database> _bukaDb() async {
+    try {
+      final d = await DatabaseHelper.instance.database;
+      await _migrasiMingguan(d);
+      return d;
+    } catch (_) {
+      _dbSiap = null; // coba lagi di pemanggilan berikutnya
+      rethrow;
+    }
+  }
+
+  /// Memastikan tabel overhead menerima periode MINGGUAN dan view overhead
+  /// menghitung mingguan (x52/12). Aman dijalankan berulang; data lama tetap.
+  Future<void> _migrasiMingguan(Database d) async {
+    final t = await d.rawQuery(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='overhead'");
+    final v = await d.rawQuery(
+        "SELECT sql FROM sqlite_master WHERE type='view' AND name='v_overhead_per_porsi'");
+    final tabelOk = t.isNotEmpty && '${t.first['sql']}'.contains('MINGGUAN');
+    final viewOk = v.isNotEmpty && '${v.first['sql']}'.contains('MINGGUAN');
+    if (tabelOk && viewOk) return;
+
+    await d.transaction((tx) async {
+      await tx.execute('DROP VIEW IF EXISTS v_margin_menu');
+      await tx.execute('DROP VIEW IF EXISTS v_overhead_per_porsi');
+
+      if (!tabelOk) {
+        await tx.execute('''
+          CREATE TABLE overhead_baru (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nama TEXT NOT NULL,
+            nominal INTEGER NOT NULL,
+            periode TEXT NOT NULL CHECK (periode IN ('HARIAN','MINGGUAN','BULANAN')),
+            aktif INTEGER NOT NULL DEFAULT 1
+          )''');
+        await tx.execute(
+            'INSERT INTO overhead_baru SELECT id,nama,nominal,periode,aktif FROM overhead');
+        await tx.execute('DROP TABLE overhead');
+        await tx.execute('ALTER TABLE overhead_baru RENAME TO overhead');
+      }
+
+      await tx.execute('''
+        CREATE VIEW v_overhead_per_porsi AS
+        SELECT
+          SUM(CASE periode WHEN 'BULANAN' THEN nominal
+                           WHEN 'MINGGUAN' THEN nominal * 52.0 / 12
+                           ELSE nominal * 30 END) AS overhead_bulanan,
+          SUM(CASE periode WHEN 'BULANAN' THEN nominal
+                           WHEN 'MINGGUAN' THEN nominal * 52.0 / 12
+                           ELSE nominal * 30 END)
+            / (SELECT MAX(CAST(nilai AS REAL), 1.0) FROM pengaturan
+               WHERE kunci = 'estimasi_porsi_bulanan') AS per_porsi
+        FROM overhead WHERE aktif = 1''');
+
+      await tx.execute('''
+        CREATE VIEW v_margin_menu AS
+        SELECT h.nama, h.harga_jual, h.hpp_bahan,
+               h.hpp_bahan + COALESCE(o.per_porsi,0) AS hpp_penuh,
+               h.harga_jual - h.hpp_bahan - COALESCE(o.per_porsi,0) AS laba_per_porsi,
+               CASE WHEN h.harga_jual > 0
+                 THEN (h.harga_jual - h.hpp_bahan - COALESCE(o.per_porsi,0)) * 100.0 / h.harga_jual END AS margin_persen
+        FROM v_hpp_menu h, v_overhead_per_porsi o''');
+    });
+  }
 
   // Getter publik agar bisa diakses oleh ManajemenQueries di manajemen_screen.dart
   Future<Database> get db => _db;
