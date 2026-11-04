@@ -3,6 +3,48 @@
 -- Stok selalu dalam SATUAN DASAR. Resep disimpan sebagai pecahan.
 -- Semua perubahan stok WAJIB lewat stok_mutasi (buku besar stok).
 -- =====================================================
+-- =====================================================
+-- VIEW
+-- =====================================================
+CREATE VIEW v_hpp_rincian AS
+SELECT r.menu_id, m.nama AS menu, b.nama AS bahan,
+       r.qty_num || '/' || r.qty_den AS takaran,
+       r.qty_dec * b.hpp_per_dasar AS biaya
+FROM resep_item r
+JOIN menu m  ON m.id = r.menu_id
+JOIN bahan b ON b.id = r.bahan_id;
+
+CREATE VIEW v_hpp_menu AS
+SELECT m.id AS menu_id, m.nama, m.harga_jual,
+       COALESCE(SUM(r.qty_dec * b.hpp_per_dasar), 0) AS hpp_bahan
+FROM menu m
+LEFT JOIN resep_item r ON r.menu_id = m.id
+LEFT JOIN bahan b ON b.id = r.bahan_id
+GROUP BY m.id;
+
+-- Perbaikan rumus overhead mingguan dan pencegahan bagi nol di sini:
+CREATE VIEW v_overhead_per_porsi AS
+SELECT
+  SUM(CASE periode WHEN 'BULANAN' THEN nominal 
+                   WHEN 'MINGGUAN' THEN nominal * 52.0 / 12 
+                   ELSE nominal * 30 END) AS overhead_bulanan,
+  SUM(CASE periode WHEN 'BULANAN' THEN nominal 
+                   WHEN 'MINGGUAN' THEN nominal * 52.0 / 12 
+                   ELSE nominal * 30 END)
+    / (SELECT MAX(CAST(nilai AS REAL), 1.0) FROM pengaturan WHERE kunci = 'estimasi_porsi_bulanan') AS per_porsi
+FROM overhead WHERE aktif = 1;
+
+CREATE VIEW v_margin_menu AS
+SELECT h.nama, h.harga_jual, h.hpp_bahan,
+       h.hpp_bahan + COALESCE(o.per_porsi,0) AS hpp_penuh,
+       h.harga_jual - h.hpp_bahan - COALESCE(o.per_porsi,0) AS laba_per_porsi,
+       CASE WHEN h.harga_jual > 0
+         THEN (h.harga_jual - h.hpp_bahan - COALESCE(o.per_porsi,0)) * 100.0 / h.harga_jual END AS margin_persen
+FROM v_hpp_menu h, v_overhead_per_porsi o;
+
+-- (lanjutan view lainnya biarkan tetap seperti semula...)
+
+
 PRAGMA foreign_keys = ON;
 
 -- ---------- MASTER ----------
