@@ -4,6 +4,9 @@
 //  2) Transaksi = satu db.transaction: validasi stok -> simpan nota -> potong stok.
 //     Jika ada yang gagal, semuanya dibatalkan (rollback).
 //  3) Harga, takaran, dan HPP dihitung ulang dari database saat checkout.
+import 'dart:io';
+
+import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
 import 'database_helper.dart';
@@ -823,6 +826,74 @@ class PosRepository {
   Future<List<Map<String, Object?>>> marginMenu() async {
     final database = await _db;
     return database.query('v_margin_menu', orderBy: 'margin_persen');
+  }
+
+
+  // ---------- CADANGAN DATA (EKSPOR / IMPOR) ----------
+
+  /// Membuat salinan database yang konsisten di folder cache, lalu
+  /// mengembalikan path-nya (siap dibagikan ke Drive/WhatsApp/Files).
+  Future<String> eksporDatabase() async {
+    final d = await _db;
+    final tmp = await getTemporaryDirectory();
+    final t = DateTime.now();
+    String dua(int x) => x.toString().padLeft(2, '0');
+    final nama =
+        'pawon_cadangan_${t.year}${dua(t.month)}${dua(t.day)}_${dua(t.hour)}${dua(t.minute)}.db';
+    final tujuan = '${tmp.path}/$nama';
+    final f = File(tujuan);
+    if (await f.exists()) await f.delete();
+    try {
+      await d.execute("VACUUM INTO '${tujuan.replaceAll("'", "''")}'");
+    } catch (_) {
+      // Android lama tanpa VACUUM INTO: salin file setelah checkpoint.
+      try {
+        await d.rawQuery('PRAGMA wal_checkpoint(TRUNCATE)');
+      } catch (_) {}
+      await File(d.path).copy(tujuan);
+    }
+    return tujuan;
+  }
+
+  /// Mengganti seluruh data aplikasi dengan berkas cadangan.
+  /// Setelah selesai, aplikasi HARUS ditutup lalu dibuka lagi.
+  Future<void> imporDatabase(String sumber) async {
+    final berkas = File(sumber);
+    if (!await berkas.exists()) {
+      throw PosException('Berkas cadangan tidak ditemukan');
+    }
+
+    // 1) Validasi: harus database SQLite yang berisi tabel inti kedai.
+    Database? cek;
+    try {
+      cek = await openDatabase(sumber, readOnly: true);
+      final r = await cek.rawQuery("SELECT name FROM sqlite_master WHERE type='table'");
+      final ada = r.map((e) => '${e['name']}').toSet();
+      for (final wajib in ['bahan', 'menu', 'transaksi', 'pengaturan']) {
+        if (!ada.contains(wajib)) {
+          throw PosException('Bukan cadangan data kedai (tabel $wajib tidak ada)');
+        }
+      }
+    } on PosException {
+      rethrow;
+    } catch (_) {
+      throw PosException('Berkas bukan database yang valid');
+    } finally {
+      await cek?.close();
+    }
+
+    // 2) Tutup koneksi lama, simpan salinan darurat, lalu timpa.
+    final d = await _db;
+    final path = d.path;
+    await d.close();
+    _dbSiap = null;
+    for (final akhiran in ['-wal', '-shm', '-journal']) {
+      final x = File('$path$akhiran');
+      if (await x.exists()) await x.delete();
+    }
+    final lama = File(path);
+    if (await lama.exists()) await lama.copy('$path.sebelum_impor');
+    await berkas.copy(path);
   }
 
 }
