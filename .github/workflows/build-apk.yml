@@ -18,8 +18,9 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.24.5'
           channel: stable
-          flutter-version: "3.24.5"
+          cache: true
 
       - name: Pasang keystore tetap
         env:
