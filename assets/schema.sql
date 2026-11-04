@@ -3,48 +3,6 @@
 -- Stok selalu dalam SATUAN DASAR. Resep disimpan sebagai pecahan.
 -- Semua perubahan stok WAJIB lewat stok_mutasi (buku besar stok).
 -- =====================================================
--- =====================================================
--- VIEW
--- =====================================================
-CREATE VIEW v_hpp_rincian AS
-SELECT r.menu_id, m.nama AS menu, b.nama AS bahan,
-       r.qty_num || '/' || r.qty_den AS takaran,
-       r.qty_dec * b.hpp_per_dasar AS biaya
-FROM resep_item r
-JOIN menu m  ON m.id = r.menu_id
-JOIN bahan b ON b.id = r.bahan_id;
-
-CREATE VIEW v_hpp_menu AS
-SELECT m.id AS menu_id, m.nama, m.harga_jual,
-       COALESCE(SUM(r.qty_dec * b.hpp_per_dasar), 0) AS hpp_bahan
-FROM menu m
-LEFT JOIN resep_item r ON r.menu_id = m.id
-LEFT JOIN bahan b ON b.id = r.bahan_id
-GROUP BY m.id;
-
--- Perbaikan rumus overhead mingguan dan pencegahan bagi nol di sini:
-CREATE VIEW v_overhead_per_porsi AS
-SELECT
-  SUM(CASE periode WHEN 'BULANAN' THEN nominal 
-                   WHEN 'MINGGUAN' THEN nominal * 52.0 / 12 
-                   ELSE nominal * 30 END) AS overhead_bulanan,
-  SUM(CASE periode WHEN 'BULANAN' THEN nominal 
-                   WHEN 'MINGGUAN' THEN nominal * 52.0 / 12 
-                   ELSE nominal * 30 END)
-    / (SELECT MAX(CAST(nilai AS REAL), 1.0) FROM pengaturan WHERE kunci = 'estimasi_porsi_bulanan') AS per_porsi
-FROM overhead WHERE aktif = 1;
-
-CREATE VIEW v_margin_menu AS
-SELECT h.nama, h.harga_jual, h.hpp_bahan,
-       h.hpp_bahan + COALESCE(o.per_porsi,0) AS hpp_penuh,
-       h.harga_jual - h.hpp_bahan - COALESCE(o.per_porsi,0) AS laba_per_porsi,
-       CASE WHEN h.harga_jual > 0
-         THEN (h.harga_jual - h.hpp_bahan - COALESCE(o.per_porsi,0)) * 100.0 / h.harga_jual END AS margin_persen
-FROM v_hpp_menu h, v_overhead_per_porsi o;
-
--- (lanjutan view lainnya biarkan tetap seperti semula...)
-
-
 PRAGMA foreign_keys = ON;
 
 -- ---------- MASTER ----------
@@ -116,8 +74,6 @@ CREATE TABLE transaksi (
   status        TEXT NOT NULL DEFAULT 'SELESAI'
 );
 
--- Satu baris = satu pesanan (menu tetap ATAU seblak prasmanan).
--- harga_jual & hpp_snapshot = PER 1 PORSI (sudah termasuk topping tambahan).
 CREATE TABLE transaksi_item (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   transaksi_id  INTEGER NOT NULL REFERENCES transaksi(id) ON DELETE CASCADE,
@@ -133,9 +89,6 @@ CREATE TABLE transaksi_item (
   catatan       TEXT
 );
 
--- Rincian topping / perubahan bahan per pesanan (per 1 porsi item).
--- jenis: PRASMANAN (pilihan prasmanan), TAMBAH (topping tambahan di menu),
---        HAPUS (bahan resep tidak dipakai -> stok tidak dipotong)
 CREATE TABLE transaksi_item_topping (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   item_id      INTEGER NOT NULL REFERENCES transaksi_item(id) ON DELETE CASCADE,
@@ -221,9 +174,14 @@ GROUP BY m.id;
 
 CREATE VIEW v_overhead_per_porsi AS
 SELECT
-  SUM(CASE periode WHEN 'BULANAN' THEN nominal ELSE nominal * 30 END) AS overhead_bulanan,
-  SUM(CASE periode WHEN 'BULANAN' THEN nominal ELSE nominal * 30 END)
-    / (SELECT CAST(nilai AS REAL) FROM pengaturan WHERE kunci = 'estimasi_porsi_bulanan') AS per_porsi
+  SUM(CASE periode WHEN 'BULANAN'  THEN nominal
+                   WHEN 'MINGGUAN' THEN nominal * 52.0 / 12
+                   ELSE nominal * 30 END) AS overhead_bulanan,
+  SUM(CASE periode WHEN 'BULANAN'  THEN nominal
+                   WHEN 'MINGGUAN' THEN nominal * 52.0 / 12
+                   ELSE nominal * 30 END)
+    / (SELECT MAX(CAST(nilai AS REAL), 1.0) FROM pengaturan
+       WHERE kunci = 'estimasi_porsi_bulanan') AS per_porsi
 FROM overhead WHERE aktif = 1;
 
 CREATE VIEW v_margin_menu AS
@@ -260,7 +218,7 @@ JOIN bahan b ON b.id = r.bahan_id
 GROUP BY m.id;
 
 -- =====================================================
--- DATA AWAL (harga = ASUMSI, ganti dengan harga asli)
+-- DATA AWAL
 -- =====================================================
 INSERT INTO bahan (id,nama,satuan_dasar,hpp_per_dasar,stok_minimum) VALUES
  (1,'Sayur','batang',500,20),
@@ -274,7 +232,6 @@ INSERT INTO bahan (id,nama,satuan_dasar,hpp_per_dasar,stok_minimum) VALUES
  (9,'Dumpling keju','pcs',1800,20),
  (10,'Enoki','bungkus',6000,3);
 
--- Pengaturan prasmanan (ASUMSI): harga per 1 pilihan & stok terpakai per pilihan
 UPDATE bahan SET bisa_prasmanan=1, harga_prasmanan=1000, qty_prasmanan=1   WHERE id=1;
 UPDATE bahan SET bisa_prasmanan=1, harga_prasmanan=3000, qty_prasmanan=0.5 WHERE id=2;
 UPDATE bahan SET bisa_prasmanan=1, harga_prasmanan=1000, qty_prasmanan=5   WHERE id=3;
