@@ -204,6 +204,225 @@ class _HppTabState extends State<HppTab> {
             ),
             const SizedBox(width: 8),
             FilledButton(
+// hpp_screen.dart — tab "HPP" di Kelola.
+import 'package:flutter/material.dart';
+
+import 'helpers.dart';
+import 'models.dart';
+import 'pos_repository.dart';
+
+double? _angka(String s) => double.tryParse(s.trim().replaceAll(',', '.'));
+int? _bulat(String s) => int.tryParse(s.trim().replaceAll('.', ''));
+
+int _saranHarga(double hpp, double targetPersen) {
+  final m = targetPersen.clamp(0, 94) / 100;
+  final mentah = hpp / (1 - m);
+  return ((mentah / 500).ceil()) * 500;
+}
+
+double _marginPersen(num harga, double hpp) => harga <= 0 ? 0 : (harga - hpp) / harga * 100;
+
+double _perBulan(num nominal, String periode) {
+  switch (periode) {
+    case 'HARIAN':
+      return nominal * 30;
+    case 'MINGGUAN':
+      return nominal * 52 / 12; // ≈ 4,33 minggu per bulan
+    default:
+      return nominal.toDouble();
+  }
+}
+
+String _labelPeriode(String p) =>
+    p == 'BULANAN' ? 'bulan' : (p == 'MINGGUAN' ? 'minggu' : 'hari');
+
+class _HppData {
+  final List> menus;
+  final List> overhead;
+  final List<Bahan> bahan;
+  final double ohPerPorsi;
+  final int estPorsi;
+  final int porsi30;
+  final double target;
+  final int biayaDasar;
+  const _HppData(this.menus, this.overhead, this.bahan, this.ohPerPorsi, this.estPorsi, this.porsi30,
+      this.target, this.biayaDasar);
+}
+
+class HppTab extends StatefulWidget {
+  final PosRepository repo;
+  const HppTab({super.key, required this.repo});
+  @override
+  State<HppTab> createState() => _HppTabState();
+}
+
+class _HppTabState extends State<HppTab> {
+  late Future<_HppData> _f = _muat();
+  final _estimasi = TextEditingController();
+  final _target = TextEditingController();
+
+  Future<_HppData> _muat() async {
+    final r = widget.repo;
+    final d = _HppData(
+      await r.daftarMenuLengkap(),
+      await r.daftarOverhead(),
+      await r.daftarBahan(),
+      await r.overheadPerPorsi(),
+      await r.estimasiPorsiBulanan(),
+      await r.porsiTerjual30Hari(),
+      await r.targetMargin(),
+      await r.biayaDasarPrasmanan(),
+    );
+    _estimasi.text = '${d.estPorsi}';
+    _target.text = qtyFmt(d.target);
+    return d;
+  }
+
+  void _refresh() => setState(() => _f = _muat());
+
+  @override
+  void dispose() {
+    _estimasi.dispose();
+    _target.dispose();
+    super.dispose();
+  }
+
+  Future<void> _aman(Future<void> Function() aksi, {String? pesan}) async {
+    try {
+      await aksi();
+      if (pesan != null && mounted) snack(context, pesan);
+      _refresh();
+    } on PosException catch (e) {
+      if (mounted) snack(context, e.pesan);
+    }
+  }
+
+  Future<void> _formOverhead({Map<String, Object?>? o}) async {
+    final nama = TextEditingController(text: '${o?['nama'] ?? ''}');
+    final nominal = TextEditingController(text: o == null ? '' : '${n(o['nominal']).toInt()}');
+    var periode = '${o?['periode'] ?? 'BULANAN'}';
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => AlertDialog(
+          title: Text(o == null ? 'Tambah biaya tetap' : 'Ubah biaya tetap'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(controller: nama, decoration: const InputDecoration(labelText: 'Nama (sewa, listrik, gas, gaji...)')),
+            TextField(
+                controller: nominal,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Nominal (Rp)')),
+            DropdownButtonFormField<String>(
+              value: periode,
+              decoration: const InputDecoration(labelText: 'Dibayar per'),
+              items: const [
+                DropdownMenuItem(value: 'BULANAN', child: Text('Bulan')),
+                DropdownMenuItem(value: 'MINGGUAN', child: Text('Mingguan')),
+                DropdownMenuItem(value: 'HARIAN', child: Text('Hari')),
+              ],
+              onChanged: (v) => setD(() => periode = v ?? periode),
+            ),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Simpan')),
+          ],
+        ),
+      ),
+    );
+    final namaTxt = nama.text;
+    final nom = _bulat(nominal.text) ?? -1;
+    nama.dispose();
+    nominal.dispose();
+    if (ok != true) return;
+    await _aman(() => widget.repo.simpanOverhead(
+        id: o?['id'] as int?,
+        nama: namaTxt,
+        nominal: nom,
+        periode: periode,
+        aktif: (o?['aktif'] ?? 1) == 1));
+  }
+
+  Future<void> _terapkanHarga(Map<String, Object?> m, int saran) async {
+    final yakin = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Ubah harga ${m['nama']}?'),
+        content: Text('${rp(n(m['harga_jual']))}  →  ${rp(saran)}\n\n'
+            'Berlaku untuk transaksi berikutnya. Nota lama tidak berubah.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Ubah harga')),
+        ],
+      ),
+    );
+    if (yakin != true) return;
+    await _aman(() => widget.repo.updateMenu(m['id'] as int, harga: saran), pesan: 'Harga diubah');
+  }
+
+  Color _warnaMargin(double margin, double target) =>
+      margin >= target ? Colors.green : (margin >= 0 ? Colors.orange : Colors.red);
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<_HppData>(
+      future: _f,
+      builder: (context, snap) {
+        if (snap.hasError) return Center(child: Text('${snap.error}'));
+        if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+        final d = snap.data!;
+        final totalBulanan = d.overhead
+            .where((o) => o['aktif'] == 1)
+            .fold<double>(0, (a, o) => a + _perBulan(n(o['nominal']), '${o['periode']}'));
+
+        return ListView(padding: const EdgeInsets.fromLTRB(12, 12, 12, 40), children: [
+          // ---------------------------------------------- 1. Biaya tetap
+          const Text('1. Biaya tetap (overhead)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 4),
+          ...d.overhead.map((o) {
+            final aktif = o['aktif'] == 1;
+            final periodeStr = '${o['periode']}';
+            return ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: Text('${o['nama']}', style: TextStyle(color: aktif ? null : Colors.grey)),
+              subtitle: Text('${rp(n(o['nominal']))} / ${_labelPeriode(periodeStr)}'),
+              onTap: () => _formOverhead(o: o),
+              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                Switch(
+                  value: aktif,
+                  onChanged: (v) => _aman(() => widget.repo.simpanOverhead(
+                      id: o['id'] as int,
+                      nama: '${o['nama']}',
+                      nominal: n(o['nominal']).toInt(),
+                      periode: periodeStr,
+                      aktif: v)),
+                ),
+                IconButton(
+                    icon: const Icon(Icons.delete_outline, color: Colors.red),
+                    onPressed: () => _aman(() => widget.repo.hapusOverhead(o['id'] as int))),
+              ]),
+            );
+          }),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+                onPressed: () => _formOverhead(),
+                icon: const Icon(Icons.add),
+                label: const Text('Tambah biaya tetap')),
+          ),
+          const Divider(),
+          Row(children: [
+            Expanded(
+              child: TextField(
+                controller: _estimasi,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                    labelText: 'Estimasi porsi terjual / bulan', helperText: 'Pembagi biaya tetap'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            FilledButton(
               onPressed: () => _aman(
                   () => widget.repo.setEstimasiPorsiBulanan(_bulat(_estimasi.text) ?? 0),
                   pesan: 'Estimasi disimpan'),
