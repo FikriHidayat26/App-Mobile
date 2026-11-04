@@ -2,6 +2,7 @@
 // pengaturan prasmanan, satuan beli), Kulak (pembelian), Audit (cek selisih stok & keuangan).
 import 'package:flutter/material.dart';
 
+import 'backup_screen.dart'; // <-- Diimport agar tombol cadangan bisa membuka BackupScreen
 import 'helpers.dart';
 import 'hpp_screen.dart';
 import 'models.dart';
@@ -22,6 +23,18 @@ class ManajemenScreen extends StatelessWidget {
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Kelola Menu & Bahan'),
+          actions: [
+            // --- TOMBOL CADANGAN DATA (EKSPOR / IMPOR) ---
+            IconButton(
+              icon: const Icon(Icons.backup_outlined),
+              tooltip: 'Cadangan data',
+              onPressed: () => Navigator.push(
+                context, 
+                MaterialPageRoute(builder: (_) => const BackupScreen()),
+              ),
+            ),
+            // ---------------------------------------------
+          ],
           bottom: const TabBar(isScrollable: true, tabs: [
             Tab(text: 'Menu'),
             Tab(text: 'HPP'),
@@ -55,7 +68,7 @@ class MenuTab extends StatefulWidget {
 }
 
 class _MenuTabState extends State<MenuTab> {
-  late Future<List<Map<String, Object?>>> _f = widget.repo.daftarMenuLengkap();
+  late Future<List>> _f = widget.repo.daftarMenuLengkap();
   void _refresh() => setState(() => _f = widget.repo.daftarMenuLengkap());
 
   Future<void> _dialogMenu({Map<String, Object?>? sumber}) async {
@@ -105,7 +118,7 @@ class _MenuTabState extends State<MenuTab> {
         icon: const Icon(Icons.add),
         label: const Text('Menu'),
       ),
-      body: FutureBuilder<List<Map<String, Object?>>>(
+      body: FutureBuilder<List>>(
         future: _f,
         builder: (context, snap) {
           if (snap.hasError) return Center(child: Text('${snap.error}'));
@@ -197,7 +210,7 @@ class _ResepEditorScreenState extends State<ResepEditorScreen> {
           return Scaffold(appBar: AppBar(), body: const Center(child: CircularProgressIndicator()));
         }
         final menu = snap.data![0] as Map<String, Object?>?;
-        final resep = snap.data![1] as List<Map<String, Object?>>;
+        final resep = snap.data![1] as List>;
         final bahan = snap.data![2] as List<Bahan>;
         final oh = snap.data![3] as double;
         final hpp = resep.fold<double>(0, (a, r) => a + n(r['biaya']));
@@ -465,7 +478,7 @@ class _BahanTabState extends State<BahanTab> {
             padding: EdgeInsets.fromLTRB(16, 16, 16, MediaQuery.of(ctx).viewInsets.bottom + 16),
             child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text('Satuan beli: ${b.nama}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              FutureBuilder<List<Map<String, Object?>>>(
+              FutureBuilder<List>>(
                 future: daftar,
                 builder: (_, s) => Column(
                   children: (s.data ?? [])
@@ -616,7 +629,7 @@ class _BarisKulak {
   int satuanId = 0; // 0 = satuan dasar
   final qty = TextEditingController();
   final harga = TextEditingController();
-  List<Map<String, Object?>> satuanList = [];
+  List> satuanList = [];
 }
 
 class KulakTab extends StatefulWidget {
