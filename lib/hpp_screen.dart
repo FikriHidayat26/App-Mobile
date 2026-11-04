@@ -100,7 +100,7 @@ class _HppTabState extends State<HppTab> {
               decoration: const InputDecoration(labelText: 'Dibayar per'),
               items: const [
                 DropdownMenuItem(value: 'BULANAN', child: Text('Bulan')),
-                DropdownMenuItem(value: 'MINGGUAN', child: Text('Bulan')),
+                DropdownMenuItem(value: 'MINGGUAN', child: Text('Mingguan')),
                 DropdownMenuItem(value: 'HARIAN', child: Text('Hari')),
               ],
               onChanged: (v) => setD(() => periode = v ?? periode),
