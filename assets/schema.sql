@@ -123,7 +123,7 @@ CREATE TABLE overhead (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   nama          TEXT NOT NULL,
   nominal       INTEGER NOT NULL,
-  periode       TEXT NOT NULL CHECK (periode IN ('HARIAN','BULANAN')),
+  periode       TEXT NOT NULL CHECK (periode IN ('HARIAN','MINGGUAN','BULANAN')),
   aktif         INTEGER NOT NULL DEFAULT 1
 );
 
