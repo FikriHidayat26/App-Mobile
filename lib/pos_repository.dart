@@ -620,6 +620,64 @@ class PosRepository {
     return r.isEmpty ? 0 : ((r.first['per_porsi'] as num?)?.toDouble() ?? 0);
   }
 
+  // =============================================================== HPP & OVERHEAD
+
+  Future<List<Map<String, Object?>>> daftarOverhead() async {
+    final database = await _db;
+    return database.query('overhead', orderBy: 'aktif DESC, nama COLLATE NOCASE');
+  }
+
+  Future<void> simpanOverhead({
+    int? id,
+    required String nama,
+    required int nominal,
+    required String periode,
+    bool aktif = true,
+  }) async {
+    if (nama.trim().isEmpty) throw PosException('Nama biaya wajib diisi');
+    if (nominal < 0) throw PosException('Nominal tidak valid');
+    if (periode != 'HARIAN' && periode != 'BULANAN') throw PosException('Periode tidak valid');
+    final database = await _db;
+    final data = {'nama': nama.trim(), 'nominal': nominal, 'periode': periode, 'aktif': aktif ? 1 : 0};
+    if (id == null) {
+      await database.insert('overhead', data);
+    } else {
+      await database.update('overhead', data, where: 'id = ?', whereArgs: [id]);
+    }
+  }
+
+  Future<void> hapusOverhead(int id) async {
+    final database = await _db;
+    await database.delete('overhead', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<int> estimasiPorsiBulanan() async =>
+      int.tryParse(await getPengaturan('estimasi_porsi_bulanan') ?? '') ?? 1500;
+
+  /// Pembagi overhead per porsi. Harus > 0 (jika 0 hasil view menjadi kosong).
+  Future<void> setEstimasiPorsiBulanan(int v) async {
+    if (v <= 0) throw PosException('Estimasi porsi harus lebih dari 0');
+    await setPengaturan('estimasi_porsi_bulanan', '$v');
+  }
+
+  /// Porsi terjual 30 hari terakhir (dasar untuk estimasi yang realistis).
+  Future<int> porsiTerjual30Hari() async {
+    final database = await _db;
+    final r = await database.rawQuery('''
+      SELECT COALESCE(SUM(ti.qty), 0) AS q
+      FROM transaksi t JOIN transaksi_item ti ON ti.transaksi_id = t.id
+      WHERE t.status = 'SELESAI' AND date(t.waktu) >= date('now','localtime','-30 day')''');
+    return (r.first['q'] as num).toInt();
+  }
+
+  Future<double> targetMargin() async =>
+      double.tryParse(await getPengaturan('target_margin') ?? '') ?? 40;
+
+  Future<void> setTargetMargin(double v) async {
+    if (v < 0 || v >= 95) throw PosException('Target margin harus antara 0 dan 94');
+    await setPengaturan('target_margin', '$v');
+  }
+
   // =============================================================== STOK MANUAL
 
   /// Set stok sesuai hitungan fisik; selisih dicatat sebagai OPNAME.

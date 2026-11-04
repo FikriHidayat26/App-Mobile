@@ -3,6 +3,7 @@
 import 'package:flutter/material.dart';
 
 import 'helpers.dart';
+import 'hpp_screen.dart';
 import 'models.dart';
 import 'pos_repository.dart';
 import 'printer_screen.dart';
@@ -17,12 +18,13 @@ class ManajemenScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 5,
+      length: 6,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Kelola Menu & Bahan'),
           bottom: const TabBar(isScrollable: true, tabs: [
             Tab(text: 'Menu'),
+            Tab(text: 'HPP'),
             Tab(text: 'Bahan'),
             Tab(text: 'Kulak'),
             Tab(text: 'Audit'),
@@ -31,6 +33,7 @@ class ManajemenScreen extends StatelessWidget {
         ),
         body: TabBarView(children: [
           MenuTab(repo: repo),
+          HppTab(repo: repo),
           BahanTab(repo: repo),
           KulakTab(repo: repo),
           AuditTab(repo: repo),
