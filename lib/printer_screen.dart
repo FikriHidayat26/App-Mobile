@@ -56,7 +56,7 @@ class _PrinterTabState extends State<PrinterTab> {
 
   Future<void> _simpan({bool tampilkanPesan = true}) async {
     final r = widget.repo;
-    await r.setPengaturan('nama_kedai', _namaKedai.text.trim().isEmpty ? 'KEDAI SEBLAK' : _namaKedai.text.trim());
+    await r.setPengaturan('nama_kedai', _namaKedai.text.trim().isEmpty ? 'PAWOEN LANGGANANKU' : _namaKedai.text.trim());
     await r.setPengaturan('struk_footer', _footer.text.trim());
     await r.setPengaturan('printer_mac', _mac);
     await r.setPengaturan('printer_nama', _namaPrinter);
@@ -96,7 +96,7 @@ class _PrinterTabState extends State<PrinterTab> {
   String get _strukContoh {
     final s = Struk(
       id: 0,
-      noNota: 'KS-TES-001',
+      noNota: 'PL-CUS-001',
       waktu: DateTime.now().toString().substring(0, 16),
       metode: 'TUNAI',
       total: 27000,
@@ -127,7 +127,7 @@ class _PrinterTabState extends State<PrinterTab> {
       ],
     );
     return teksStruk(s,
-        namaKedai: _namaKedai.text.trim().isEmpty ? 'KEDAI SEBLAK' : _namaKedai.text.trim(),
+        namaKedai: _namaKedai.text.trim().isEmpty ? 'PAWOEN LANGGANANKU' : _namaKedai.text.trim(),
         lebar: _lebar,
         footer: _footer.text.trim(),
         bayar: 30000);
