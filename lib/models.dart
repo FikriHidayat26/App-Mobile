@@ -323,10 +323,41 @@ String _kanan(String kiri, String kanan, {int lebar = 32}) {
   return lines.join('\n');
 }
 
+/// Teks rata tengah: dibungkus per kata sesuai lebar kertas, tiap baris diberi spasi kiri
+/// agar pratinjau sama dengan hasil cetak. Kata yang kepanjangan dipotong paksa.
+String _tengah(String teks, int lebar) {
+  final hasil = <String>[];
+  var cur = '';
+  void simpan() {
+    if (cur.isNotEmpty) hasil.add('${' ' * ((lebar - cur.length) ~/ 2)}$cur');
+    cur = '';
+  }
+
+  for (final k in teks.trim().split(RegExp(r'\s+'))) {
+    var sisa = k;
+    while (sisa.length > lebar) {
+      simpan();
+      cur = sisa.substring(0, lebar);
+      simpan();
+      sisa = sisa.substring(lebar);
+    }
+    if (cur.isEmpty) {
+      cur = sisa;
+    } else if (cur.length + 1 + sisa.length <= lebar) {
+      cur = '$cur $sisa';
+    } else {
+      simpan();
+      cur = sisa;
+    }
+  }
+  simpan();
+  return hasil.join('\n');
+}
+
 String teksStruk(Struk s,
     {String namaKedai = 'KEDAI SEBLAK', int? bayar, int lebar = 32, String footer = 'Terima kasih!'}) {
   final b = StringBuffer();
-  b.writeln(namaKedai);
+  b.writeln(_tengah(namaKedai, lebar));
   b.writeln('No   : ${s.noNota}');
   b.writeln('Waktu: ${s.waktu}');
   b.writeln('Bayar: ${s.metode}${s.status == 'VOID' ? '  [VOID]' : ''}');
@@ -349,7 +380,7 @@ String teksStruk(Struk s,
     b.writeln(_kanan('Bayar', rupiah(bayar), lebar: lebar));
     b.writeln(_kanan('Kembali', rupiah(bayar - s.total), lebar: lebar));
   }
-  if (footer.trim().isNotEmpty) b.writeln(footer.trim());
+  if (footer.trim().isNotEmpty) b.writeln(_tengah(footer, lebar));
   return b.toString();
 }
 
