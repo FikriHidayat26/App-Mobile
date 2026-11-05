@@ -5,6 +5,11 @@ on:
   push:
     branches: [main, master]
 
+# Jika ada push beruntun, batalkan build lama agar tidak menumpuk.
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -43,7 +48,7 @@ jobs:
 
       - name: Buat kerangka proyek Android
         run: flutter create --platforms=android --project-name kedai_pos --org com.kedai build_app
-    
+
       - name: Ubah nama aplikasi
         run: |
           sed -i 's/android:label="[^"]*"/android:label="Pawoen Langgananku"/' build_app/android/app/src/main/AndroidManifest.xml
@@ -66,14 +71,19 @@ jobs:
       - name: Ambil paket
         working-directory: build_app
         run: flutter pub get
-    
+
       - name: Buat ikon aplikasi
         working-directory: build_app
         run: dart run flutter_launcher_icons
 
+      # build-number (versionCode) = menit sejak 1970, selalu naik otomatis di setiap build.
+      # build-name (nomor yang terlihat di info aplikasi) = 1.0.<nomor run GitHub>.
       - name: Build APK (release)
         working-directory: build_app
-        run: flutter build apk --release --build-number=$(( $(date +%s) / 60 ))
+        run: >
+          flutter build apk --release
+          --build-number=$(( $(date +%s) / 60 ))
+          --build-name=1.0.${{ github.run_number }}
 
       - name: Ganti nama APK
         run: mv build_app/build/app/outputs/flutter-apk/app-release.apk build_app/build/app/outputs/flutter-apk/pawon.apk
