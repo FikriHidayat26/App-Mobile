@@ -270,12 +270,57 @@ class RingkasTransaksi {
   const RingkasTransaksi(this.id, this.noNota, this.waktu, this.metode, this.total, this.status);
 }
 
+/// Baris "kiri ... kanan" (nama + harga). Nama yang kepanjangan dibungkus per kata ke
+/// baris berikutnya (tidak dipotong); harga tetap rata kanan di baris terakhir.
+/// Hasilnya bisa berisi beberapa baris (dipisah '\n').
 String _kanan(String kiri, String kanan, {int lebar = 32}) {
-  // Nama terlalu panjang dipotong agar harga di kanan tetap utuh dalam satu baris.
-  final maks = lebar - kanan.length - 1;
-  if (kiri.length > maks) kiri = maks > 0 ? kiri.substring(0, maks) : '';
-  final sisa = lebar - kiri.length - kanan.length;
-  return '$kiri${' ' * (sisa > 1 ? sisa : 1)}$kanan';
+  final ind0 = kiri.length - kiri.trimLeft().length;
+  // Baris lanjutan menjorok 3 spasi dari awal baris pertama (sejajar setelah "1x ").
+  final indent = ' ' * (ind0 + 3 > lebar ~/ 2 ? ind0 : ind0 + 3);
+  final maksKata = lebar - indent.length;
+
+  final lines = <String>[];
+  var pre = ' ' * ind0;
+  var cur = pre;
+  var ada = false;
+
+  void tutup() {
+    lines.add(cur);
+    pre = indent;
+    cur = pre;
+    ada = false;
+  }
+
+  for (final k in kiri.trim().split(RegExp(r'\s+'))) {
+    var sisa = k;
+    // Satu kata lebih panjang dari baris: potong paksa.
+    while (maksKata > 0 && sisa.length > maksKata) {
+      if (ada) tutup();
+      cur = pre + sisa.substring(0, maksKata);
+      ada = true;
+      tutup();
+      sisa = sisa.substring(maksKata);
+    }
+    if (!ada) {
+      cur = pre + sisa;
+      ada = true;
+    } else if (cur.length + 1 + sisa.length <= lebar) {
+      cur = '$cur $sisa';
+    } else {
+      tutup();
+      cur = pre + sisa;
+      ada = true;
+    }
+  }
+
+  if (cur.length + 1 + kanan.length <= lebar) {
+    lines.add('$cur${' ' * (lebar - cur.length - kanan.length)}$kanan');
+  } else {
+    lines.add(cur);
+    final pad = lebar - kanan.length;
+    lines.add('${' ' * (pad < 0 ? 0 : pad)}$kanan');
+  }
+  return lines.join('\n');
 }
 
 String teksStruk(Struk s,

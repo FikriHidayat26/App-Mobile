@@ -92,54 +92,63 @@ class PrinterService {
 
   // ---------------------------------------------------------- ESC/POS
 
-  /// Baris pertama = judul (rata tengah, tebal). Sisanya disesuaikan (rata tengah/kiri-kanan).
+  /// Baris pertama = judul (rata tengah, tebal). Footer (setelah garis pemisah terakhir) rata tengah,
+  /// rincian "kiri ... Rp harga" diratakan ke tepi kertas, sisanya rata kiri.
   List<int> bangunBytes(String teks, int lebar) {
     final b = <int>[0x1B, 0x40]; // inisialisasi printer
     final baris = teks.split('\n');
     while (baris.isNotEmpty && baris.last.trim().isEmpty) {
       baris.removeLast();
     }
-    
+
+    // Baris rincian = teks di kiri, harga rupiah di kanan (mis. "1x Seblak     Rp 12.000").
+    final barisHarga = RegExp(r'^(.*\S)\s+(-?Rp\s?[\d.]+)$');
+    bool pemisah(String t) => t.startsWith('---') || t.startsWith('===');
+    // Setelah garis pemisah terakhir (TOTAL, Bayar, Kembali, lalu footer) -> footer rata tengah.
+    final akhirPemisah = baris.lastIndexWhere((l) => pemisah(l.trim()));
+
     for (var i = 0; i < baris.length; i++) {
       final line = baris[i];
       final trimmed = line.trim();
-      
-      // 1. Baris Judul Pertama (Nama Toko) atau Ucapan Terima Kasih -> RATA TENGAH
-      if (i == 0 || trimmed.toLowerCase().contains('terima kasih') || trimmed.toLowerCase().contains('lunas') || trimmed.contains('***')) {
-        b.addAll([0x1B, 0x61, 0x01]); // set center (rata tengah)
-        if (i == 0) {
-          b.addAll([0x1B, 0x45, 0x01]); // tebal khusus baris pertama
-        }
-        b.addAll(_ascii(trimmed));
-        b.add(0x0A);
-        if (i == 0) {
-          b.addAll([0x1B, 0x45, 0x00]); // matikan tebal
-        }
-      } 
-      // 2. Garis Pemisah (--- / ===) -> Cetak penuh selebar kertas secara rata tengah
-      else if (trimmed.startsWith('---') || trimmed.startsWith('===')) {
+      final lower = trimmed.toLowerCase();
+      final cocokHarga = barisHarga.firstMatch(line.trimRight());
+      final adaHarga = cocokHarga != null;
+      final footer = akhirPemisah >= 0 && i > akhirPemisah && trimmed.isNotEmpty && !adaHarga;
+
+      // 1. Judul (baris pertama), ucapan terima kasih / lunas, atau baris *** -> RATA TENGAH
+      //    (kalimat panjang dipecah per kata, tiap baris tetap di tengah)
+      if (i == 0 ||
+          footer ||
+          trimmed.contains('***') ||
+          (!adaHarga && (lower.contains('terima kasih') || lower.contains('lunas')))) {
         b.addAll([0x1B, 0x61, 0x01]); // rata tengah
+        if (i == 0) b.addAll([0x1B, 0x45, 0x01]); // tebal khusus baris pertama
+        for (final l in _bungkusKata(trimmed, lebar)) {
+          b.addAll(_ascii(l));
+          b.add(0x0A);
+        }
+        if (i == 0) b.addAll([0x1B, 0x45, 0x00]); // matikan tebal
+      }
+      // 2. Garis pemisah (--- / ===) -> penuh selebar kertas
+      else if (pemisah(trimmed)) {
+        b.addAll([0x1B, 0x61, 0x01]);
         b.addAll(_ascii('-' * lebar));
         b.add(0x0A);
       }
-      // 3. Rincian Item (Jika mengandung format harga/pemisah di ujung) -> RATA KIRI-KANAN
-      else if (line.contains('  ') && !trimmed.startsWith('Catatan') && !trimmed.startsWith('Kuah') && !trimmed.startsWith('Rasa')) {
+      // 3. Rincian "kiri ... Rp harga" -> rata kiri-kanan, indent dipertahankan
+      else if (adaHarga) {
         b.addAll([0x1B, 0x61, 0x00]); // rata kiri
-        // Memisahkan teks kiri dan kanan berdasarkan spasi ganda atau format kasir
-        final parts = line.split(RegExp(r'\s{2,}'));
-        if (parts.length >= 2) {
-          final kiri = parts[0].trim();
-          final kanan = parts.sublist(1).join(' ').trim();
-          final formattedLine = _formatRataKananKiri(kiri, kanan, lebar);
-          b.addAll(_ascii(formattedLine));
-        } else {
-          b.addAll(_ascii(line));
+        final indent = line.substring(0, line.length - line.trimLeft().length);
+        final kiri = '$indent${cocokHarga.group(1)!.trimLeft()}';
+        final kanan = cocokHarga.group(2)!;
+        for (final l in _kiriKanan(kiri, kanan, lebar)) {
+          b.addAll(_ascii(l));
+          b.add(0x0A);
         }
-        b.add(0x0A);
-      } 
-      // 4. Baris Biasa / Catatan / Keterangan -> RATA KIRI
+      }
+      // 4. Baris biasa / catatan / keterangan -> rata kiri
       else {
-        b.addAll([0x1B, 0x61, 0x00]); // rata kiri
+        b.addAll([0x1B, 0x61, 0x00]);
         for (final l in _bungkus(line, lebar)) {
           b.addAll(_ascii(l));
           b.add(0x0A);
@@ -147,21 +156,30 @@ class PrinterService {
       }
     }
 
+    b.addAll([0x1B, 0x61, 0x00]); // kembalikan rata kiri
     b.addAll([0x1B, 0x64, 0x04]); // maju 4 baris
     b.addAll([0x1D, 0x56, 0x42, 0x00]); // potong (diabaikan jika tanpa pemotong)
     return b;
   }
 
-  /// Fungsi pendukung untuk meratakan teks ke ujung kiri dan ujung kanan kertas thermal
-  String _formatRataKananKiri(String kiri, String kanan, int lebarMaks) {
-    final sisaSpasi = lebarMaks - (kiri.length + kanan.length);
-    if (sisaSpasi > 0) {
-      return kiri + (' ' * sisaSpasi) + kanan;
-    } else {
-      return '$kiri $kanan';
+  /// Meratakan teks ke tepi kiri & kanan kertas. Jika terlalu panjang, bagian kiri
+  /// dibungkus dan bagian kanan tetap rata kanan (tidak ada yang terpotong).
+  List<String> _kiriKanan(String kiri, String kanan, int lebar) {
+    if (kiri.length + 1 + kanan.length <= lebar) {
+      return [kiri + (' ' * (lebar - kiri.length - kanan.length)) + kanan];
     }
+    final kiriBaris = _bungkus(kiri, lebar);
+    final akhir = kiriBaris.last;
+    if (akhir.length + 1 + kanan.length <= lebar) {
+      kiriBaris[kiriBaris.length - 1] =
+          akhir + (' ' * (lebar - akhir.length - kanan.length)) + kanan;
+      return kiriBaris;
+    }
+    final pad = lebar - kanan.length;
+    return [...kiriBaris, (' ' * (pad < 0 ? 0 : pad)) + kanan];
   }
 
+  /// Bungkus per karakter (mempertahankan indent) untuk baris rata kiri.
   List<String> _bungkus(String line, int lebar) {
     if (line.length <= lebar) return [line];
     final indentN = (line.length - line.trimLeft().length).clamp(0, 6);
@@ -175,6 +193,34 @@ class PrinterService {
       sisa = sisa.substring(potong);
     }
     return hasil;
+  }
+
+  /// Bungkus per kata, untuk teks rata tengah (judul, footer, ucapan).
+  List<String> _bungkusKata(String s, int lebar) {
+    final hasil = <String>[];
+    var cur = '';
+    for (final k in s.split(' ')) {
+      if (cur.isEmpty) {
+        cur = k;
+      } else if (cur.length + 1 + k.length <= lebar) {
+        cur = '$cur $k';
+      } else {
+        hasil.add(cur);
+        cur = k;
+      }
+    }
+    if (cur.isNotEmpty) hasil.add(cur);
+    // Kata tunggal yang lebih panjang dari lebar kertas dipotong paksa.
+    final akhir = <String>[];
+    for (final h in hasil) {
+      var x = h;
+      while (x.length > lebar) {
+        akhir.add(x.substring(0, lebar));
+        x = x.substring(lebar);
+      }
+      akhir.add(x);
+    }
+    return akhir;
   }
 
   List<int> _ascii(String s) =>
