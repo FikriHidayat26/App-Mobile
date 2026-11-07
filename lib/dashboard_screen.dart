@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'helpers.dart';
 import 'models.dart' show Takaran;
 import 'pos_repository.dart';
+import 'ringkasan_menu_filter.dart';
 
 // ---------- Layar utama ----------
 class DashboardScreen extends StatelessWidget {
@@ -53,7 +54,6 @@ class _RingkasanTabState extends State<RingkasanTab> {
   Future<List<Object>> _load() => Future.wait<Object>([
         widget.repo.ringkasanHariIni(),
         widget.repo.overheadHarian(),
-        widget.repo.menuTerlarisHariIni(),
         widget.repo.sisaPorsi(),
         widget.repo.stokRealtime(),
       ]);
@@ -68,9 +68,8 @@ class _RingkasanTabState extends State<RingkasanTab> {
           if (!snap.hasData) return const Center(child: CircularProgressIndicator());
           final r = snap.data![0] as Map<String, Object?>;
           final overhead = snap.data![1] as double;
-          final terlaris = snap.data![2] as List<Map<String, Object?>>;
-          final sisa = snap.data![3] as List<Map<String, Object?>>;
-          final stok = snap.data![4] as List<Map<String, Object?>>;
+          final sisa = snap.data![2] as List<Map<String, Object?>>;
+          final stok = snap.data![3] as List<Map<String, Object?>>;
 
           final labaKotor = n(r['laba_kotor']).toDouble();
           final labaBersih = labaKotor - overhead;
@@ -100,13 +99,8 @@ class _RingkasanTabState extends State<RingkasanTab> {
                   subtitle: Text(menipis.map((e) => e['nama']).join(', ')),
                 ),
               ),
-            _judul('Menu terlaris hari ini'),
-            if (terlaris.isEmpty) const ListTile(title: Text('Belum ada penjualan')),
-            ...terlaris.map((m) => ListTile(
-                  dense: true,
-                  title: Text('${m['nama']}'),
-                  trailing: Text('${m['qty']} porsi • ${rp(n(m['omzet']))}'),
-                )),
+            // Ringkasan menu dengan filter periode / kategori / menu.
+            RingkasanMenuFilter(repo: widget.repo),
             _judul('Estimasi sisa porsi dari stok'),
             ...sisa.map((m) => ListTile(
                   dense: true,

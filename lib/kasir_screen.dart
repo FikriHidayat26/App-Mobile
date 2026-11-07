@@ -8,6 +8,8 @@ import 'helpers.dart';
 import 'models.dart';
 import 'pos_repository.dart';
 import 'printer_service.dart';
+import 'variasi_models.dart';
+import 'variasi_picker.dart';
 
 class KasirScreen extends StatefulWidget {
   final PosRepository repo;
@@ -77,6 +79,10 @@ class _KasirScreenState extends State<KasirScreen> {
     final resep = awal != null
         ? awal.resep
         : (m == null ? <ResepItem>[] : await widget.repo.resepMenu(m.id!));
+    // Variasi dinamis hanya untuk menu tetap; kelompok tanpa opsi aktif diabaikan.
+    final grupVariasi = m == null
+        ? <VariasiGrup>[]
+        : (await widget.repo.grupUntukMenu(m.id!)).where((g) => g.opsi.isNotEmpty).toList();
     if (!mounted) return;
     final hasil = await Navigator.push<CartItem>(
       context,
@@ -88,6 +94,7 @@ class _KasirScreenState extends State<KasirScreen> {
           semuaBahan: _bahanMap,
           biayaDasar: _biayaDasar,
           awal: awal,
+          grupVariasi: grupVariasi,
           sisaStok: (id) => _sisaStok(id, kecuali: awal),
         ),
       ),
@@ -408,6 +415,7 @@ class ItemEditorPage extends StatefulWidget {
   final int biayaDasar;
   final CartItem? awal;
   final double Function(int bahanId) sisaStok;
+  final List<VariasiGrup> grupVariasi;
 
   const ItemEditorPage({
     super.key,
@@ -418,6 +426,7 @@ class ItemEditorPage extends StatefulWidget {
     required this.biayaDasar,
     required this.awal,
     required this.sisaStok,
+    this.grupVariasi = const [],
   });
 
   @override
@@ -434,6 +443,12 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
   final _catatanCtl = TextEditingController();
   String _kuah = kKuah[1];
   String _rasa = kRasa[0];
+
+  // Variasi dinamis: grupId -> opsiId yang dipilih.
+  final Map<int, Set<int>> _vPilih = {};
+  // Bila menu punya variasi, Level/Kuah/Rasa/Topping lama disembunyikan
+  // (digantikan kelompok variasi yang diatur di Kelola > Variasi).
+  bool get _pakaiVariasi => widget.grupVariasi.isNotEmpty;
 
   bool get _prasmanan => widget.menu == null;
 
@@ -456,6 +471,9 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
       _kuah = kKuah.contains(a.kuah) ? a.kuah : kKuah[1];
       _rasa = kRasa.contains(a.rasa) ? a.rasa : kRasa[0];
       _catatanCtl.text = a.catatan;
+      for (final v in a.variasi) {
+        (_vPilih[v.grupId] ??= <int>{}).add(v.opsiId);
+      }
     }
   }
 
@@ -472,7 +490,7 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
         resepDihapus: {..._hapus},
         topping: [
           for (final b in widget.bahanPrasmanan)
-            if ((_pick[b.id!] ?? 0) > 0) ToppingDipilih(b, _pick[b.id!]!),
+            if (!_pakaiVariasi && (_pick[b.id!] ?? 0) > 0) ToppingDipilih(b, _pick[b.id!]!),
         ],
         biayaDasar: widget.biayaDasar,
         levelPedas: _level.round(),
@@ -481,6 +499,8 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
         rasa: _rasa,
         catatan: _catatanCtl.text,
         qty: _qty,
+        variasi: susunPilihanVariasi(widget.grupVariasi, _vPilih),
+        tampilkanLegacy: !_pakaiVariasi,
       );
 
   List<String> _kurang(CartItem c) {
@@ -508,6 +528,7 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
     final c = _susun();
     final kurang = _kurang(c);
     final kosongPrasmanan = _prasmanan && c.topping.isEmpty;
+    final variasiBelum = variasiBelumLengkap(widget.grupVariasi, _vPilih);
 
     return Scaffold(
       appBar: AppBar(title: Text(_prasmanan ? 'Seblak Prasmanan' : widget.menu!.nama)),
@@ -533,6 +554,16 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
                 onChanged: (v) => setState(() => v ? _hapus.remove(r.bahanId) : _hapus.add(r.bahanId)),
               )),
         ],
+        if (_pakaiVariasi)
+          VariasiPilihan(
+            grup: widget.grupVariasi,
+            dipilih: _vPilih,
+            onKetuk: (g, o) {
+              ketukVariasi(context, g, o, _vPilih);
+              setState(() {});
+            },
+          )
+        else ...[
         _judul(_prasmanan ? 'Pilih topping / bahan' : 'Tambah / ganti topping (opsional)'),
         if (widget.bahanPrasmanan.isEmpty)
           const Text('Belum ada bahan prasmanan (atur di Kelola > Bahan).',
@@ -589,6 +620,7 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
         _chips(kKuah, _kuah, (v) => setState(() => _kuah = v)),
         _judul('Rasa'),
         _chips(kRasa, _rasa, (v) => setState(() => _rasa = v)),
+        ],
         _judul('Catatan khusus'),
         TextField(
           controller: _catatanCtl,
@@ -610,6 +642,12 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
                   child: Text('Stok tidak cukup:\n${kurang.join('\n')}',
                       style: const TextStyle(color: Colors.red, fontSize: 12)),
                 ),
+              if (variasiBelum.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text('Pilih dulu: ${variasiBelum.join(', ')}',
+                      style: const TextStyle(color: Colors.red, fontSize: 12)),
+                ),
               if (kosongPrasmanan)
                 const Padding(
                   padding: EdgeInsets.only(bottom: 6),
@@ -620,7 +658,9 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
                     child: Text(rupiah(c.subtotal),
                         style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
                 FilledButton(
-                  onPressed: kurang.isNotEmpty || kosongPrasmanan ? null : () => Navigator.pop(context, c),
+                  onPressed: kurang.isNotEmpty || kosongPrasmanan || variasiBelum.isNotEmpty
+                      ? null
+                      : () => Navigator.pop(context, c),
                   child: Text(widget.awal == null ? 'Tambah ke pesanan' : 'Simpan perubahan'),
                 ),
               ]),

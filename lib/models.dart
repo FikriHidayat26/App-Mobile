@@ -1,4 +1,5 @@
 // models.dart — model data, konstanta pilihan, dan format struk.
+import 'variasi_models.dart';
 
 const List<String> kSatuanDasar = [
   'kg', 'gram', 'ons', 'buah', 'biji', 'ikat', 'pcs','pack', 'bungkus',
@@ -139,6 +140,12 @@ class CartItem {
   String catatan;
   int qty;
 
+  /// Pilihan variasi dinamis (grup/opsi) untuk menu tetap.
+  List<PilihanVariasi> variasi;
+
+  /// true = tulis Level/Kuah/Rasa lama ke nota. false bila menu memakai variasi baru.
+  bool tampilkanLegacy;
+
   CartItem({
     this.menu,
     this.resep = const [],
@@ -151,8 +158,11 @@ class CartItem {
     this.rasa = 'Original/Sedang',
     this.catatan = '',
     this.qty = 1,
+    List<PilihanVariasi>? variasi,
+    this.tampilkanLegacy = true,
   })  : resepDihapus = resepDihapus ?? <int>{},
-        topping = topping ?? <ToppingDipilih>[];
+        topping = topping ?? <ToppingDipilih>[],
+        variasi = variasi ?? <PilihanVariasi>[];
 
   bool get prasmanan => menu == null;
   String get namaItem => prasmanan ? 'Seblak Prasmanan' : menu!.nama;
@@ -163,7 +173,7 @@ class CartItem {
   }
 
   int get hargaSatuan {
-    final t = topping.fold<int>(0, (a, e) => a + e.harga);
+    final t = topping.fold<int>(0, (a, e) => a + e.harga) + totalHargaVariasi(variasi);
     return prasmanan ? biayaDasar + t : menu!.hargaJual + t;
   }
 
@@ -180,6 +190,11 @@ class CartItem {
       if (t.pick <= 0) continue;
       k[t.bahan.id!] = (k[t.bahan.id!] ?? 0) + t.qtyDasar;
     }
+    for (final v in variasi) {
+      for (final b in v.bahan) {
+        k[b.bahanId] = (k[b.bahanId] ?? 0) + b.qtyDasar;
+      }
+    }
     return k;
   }
 
@@ -192,9 +207,18 @@ class CartItem {
     if (tops.isNotEmpty) {
       out.add('${prasmanan ? 'Pilihan' : 'Tambah'}: ${tops.map((t) => '${t.bahan.nama} x${t.pick}').join(', ')}');
     }
-    out.add('Pedas: $levelLabel');
-    out.add('Kuah: $kuah');
-    out.add('Rasa: $rasa');
+    if (variasi.isNotEmpty) {
+      final perGrup = <String, List<String>>{};
+      for (final v in variasi) {
+        (perGrup[v.grupNama] ??= <String>[]).add(v.opsiNama);
+      }
+      perGrup.forEach((g, o) => out.add('$g: ${o.join(', ')}'));
+    }
+    if (tampilkanLegacy) {
+      out.add('Pedas: $levelLabel');
+      out.add('Kuah: $kuah');
+      out.add('Rasa: $rasa');
+    }
     if (catatan.trim().isNotEmpty) out.add('Catatan: ${catatan.trim()}');
     return out;
   }
@@ -367,7 +391,16 @@ String teksStruk(Struk s,
     final hapus = it.topping.where((t) => t.jenis == 'HAPUS').map((t) => t.nama);
     if (hapus.isNotEmpty) b.writeln('   Tanpa: ${hapus.join(', ')}');
     for (final t in it.topping.where((t) => t.jenis != 'HAPUS')) {
-      b.writeln(_kanan('   + ${t.nama} x${t.pick}', rupiah(t.harga * it.qty), lebar: lebar));
+      if (t.jenis == 'VARIASI') {
+        // Variasi: tanpa "xN"; harga hanya dicetak bila ada biaya tambahan.
+        if (t.harga > 0) {
+          b.writeln(_kanan('   + ${t.nama}', rupiah(t.harga * it.qty), lebar: lebar));
+        } else {
+          b.writeln('   + ${t.nama}');
+        }
+      } else {
+        b.writeln(_kanan('   + ${t.nama} x${t.pick}', rupiah(t.harga * it.qty), lebar: lebar));
+      }
     }
     if (it.levelPedas != null) b.writeln('   Pedas: ${it.levelPedas}');
     if (it.kuah != null) b.writeln('   Kuah : ${it.kuah}');

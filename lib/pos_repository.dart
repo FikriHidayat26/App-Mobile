@@ -11,6 +11,7 @@ import 'package:sqflite/sqflite.dart';
 
 import 'database_helper.dart';
 import 'models.dart';
+import 'variasi_models.dart';
 
 typedef ItemBeli = ({int bahanId, int? satuanBeliId, double qtyBeli, int hargaTotal});
 
@@ -40,6 +41,7 @@ class PosRepository {
     try {
       final d = await DatabaseHelper.instance.database;
       await _migrasiMingguan(d);
+      await _migrasiVariasi(d);
       return d;
     } catch (_) {
       _dbSiap = null; // coba lagi di pemanggilan berikutnya
@@ -394,6 +396,62 @@ class PosRepository {
               bid, nama, c.prasmanan ? 'PRASMANAN' : 'TAMBAH', t.pick, qty, hargaPick * t.pick, hppT));
         }
 
+        // ---- VARIASI (grup/opsi): harga tambahan + bahan yang ikut terpotong ----
+        if (c.prasmanan || c.menu == null) {
+          if (c.variasi.isNotEmpty) {
+            throw PosException('Variasi hanya berlaku untuk menu tetap');
+          }
+        } else {
+          final grupRows = await tx.rawQuery('''
+            SELECT g.id, g.nama, g.wajib, g.maks_pilih
+            FROM variasi_grup g JOIN menu_variasi_grup mg ON mg.grup_id = g.id
+            WHERE mg.menu_id = ? AND g.aktif = 1''', [c.menu!.id]);
+          final grupById = {for (final g in grupRows) g['id'] as int: g};
+          final perGrup = <int, Set<int>>{};
+          for (final pv in c.variasi) {
+            if (!grupById.containsKey(pv.grupId)) {
+              throw PosException('Variasi "${pv.grupNama}" tidak berlaku untuk ${h.nama}');
+            }
+            final himpunan = perGrup.putIfAbsent(pv.grupId, () => <int>{});
+            if (!himpunan.add(pv.opsiId)) {
+              throw PosException('Opsi "${pv.opsiNama}" terpilih dua kali');
+            }
+          }
+          for (final g in grupRows) {
+            final gid = g['id'] as int;
+            final jumlah = perGrup[gid]?.length ?? 0;
+            final maks = g['maks_pilih'] as int; // 0 = tanpa batas
+            if ((g['wajib'] as int) == 1 && jumlah == 0) {
+              throw PosException('Pilih "${g['nama']}" untuk ${h.nama}');
+            }
+            if (maks > 0 && jumlah > maks) {
+              throw PosException('"${g['nama']}" maksimal $maks pilihan');
+            }
+          }
+          // Harga & bahan SELALU dibaca dari database, bukan dari keranjang.
+          for (final pv in c.variasi) {
+            final o = await tx.query('variasi_opsi',
+                where: 'id = ? AND grup_id = ? AND aktif = 1', whereArgs: [pv.opsiId, pv.grupId]);
+            if (o.isEmpty) throw PosException('Opsi "${pv.opsiNama}" tidak tersedia lagi');
+            final tambah = (o.first['harga_tambah'] as num).toInt();
+            final namaGrup = grupById[pv.grupId]!['nama'] as String;
+            final namaOpsi = o.first['nama'] as String;
+            var hppOpsi = 0.0;
+            final bahanOpsi = await tx.rawQuery(
+                'SELECT bahan_id, qty_dasar FROM variasi_opsi_bahan WHERE opsi_id = ?', [pv.opsiId]);
+            for (final ob in bahanOpsi) {
+              final bid = ob['bahan_id'] as int;
+              final br = await bahanRow(bid);
+              final q = (ob['qty_dasar'] as num).toDouble();
+              perPorsi[bid] = (perPorsi[bid] ?? 0) + q;
+              hppOpsi += q * (br['hpp_per_dasar'] as num).toDouble();
+            }
+            harga += tambah;
+            hpp += hppOpsi;
+            h.variasi.add(_BarisVariasi(pv.grupId, pv.opsiId, namaGrup, namaOpsi, tambah, hppOpsi));
+          }
+        }
+
         h.harga = harga;
         h.hpp = hpp;
         hitung.add(h);
@@ -446,9 +504,9 @@ class PosRepository {
           'qty': c.qty,
           'harga_jual': h.harga,
           'hpp_snapshot': h.hpp,
-          'level_pedas': c.levelLabel,
-          'kuah': c.kuah,
-          'rasa': c.rasa,
+          'level_pedas': c.tampilkanLegacy ? c.levelLabel : null,
+          'kuah': c.tampilkanLegacy ? c.kuah : null,
+          'rasa': c.tampilkanLegacy ? c.rasa : null,
           'catatan': c.catatan.trim().isEmpty ? null : c.catatan.trim(),
         });
         for (final b in h.baris) {
@@ -461,6 +519,17 @@ class PosRepository {
             'qty_dasar': b.qtyDasar,
             'harga': b.harga,
             'hpp': b.hpp,
+          });
+        }
+        for (final v in h.variasi) {
+          await tx.insert('transaksi_item_variasi', {
+            'item_id': itemId,
+            'grup_id': v.grupId,
+            'opsi_id': v.opsiId,
+            'grup_nama': v.grupNama,
+            'opsi_nama': v.opsiNama,
+            'harga': v.harga,
+            'hpp': v.hpp,
           });
         }
       }
@@ -512,6 +581,8 @@ class PosRepository {
     for (final it in items) {
       final tops = await database.query('transaksi_item_topping',
           where: 'item_id = ?', whereArgs: [it['id']], orderBy: 'id');
+      final vars = await database.query('transaksi_item_variasi',
+          where: 'item_id = ?', whereArgs: [it['id']], orderBy: 'id');
       out.add(StrukItem(
         tipe: it['tipe'] as String,
         nama: (it['nama_item'] as String).isEmpty ? 'Menu' : it['nama_item'] as String,
@@ -521,10 +592,13 @@ class PosRepository {
         kuah: it['kuah'] as String?,
         rasa: it['rasa'] as String?,
         catatan: it['catatan'] as String?,
-        topping: tops
-            .map((x) => StrukTopping(x['nama'] as String, x['jenis'] as String,
-                x['jumlah_pick'] as int, (x['harga'] as num).toInt()))
-            .toList(),
+        topping: [
+          ...tops.map((x) => StrukTopping(x['nama'] as String, x['jenis'] as String,
+              x['jumlah_pick'] as int, (x['harga'] as num).toInt())),
+          // Variasi tampil sebagai baris tambahan: "Level Pedas: Level 3"
+          ...vars.map((x) => StrukTopping('${x['grup_nama']}: ${x['opsi_nama']}', 'VARIASI', 1,
+              (x['harga'] as num).toInt())),
+        ],
       ));
     }
     final h = t.first;
@@ -596,7 +670,7 @@ class PosRepository {
   Future<List<Map<String, Object?>>> daftarMenuLengkap() async {
     final database = await _db;
     return database.rawQuery('''
-      SELECT m.id, m.nama, m.harga_jual, m.aktif, h.hpp_bahan
+      SELECT m.id, m.nama, m.kategori, m.harga_jual, m.aktif, h.hpp_bahan
       FROM menu m JOIN v_hpp_menu h ON h.menu_id = m.id
       ORDER BY m.aktif DESC, m.nama COLLATE NOCASE''');
   }
@@ -896,6 +970,408 @@ class PosRepository {
     await berkas.copy(path);
   }
 
+
+  // =============================================================== VARIASI MENU
+  // Model: variasi_grup (kelompok) -> variasi_opsi (pilihan, harga tambah)
+  //        variasi_opsi_bahan (efek stok per pilihan)
+  //        menu_variasi_grup (kelompok mana berlaku di menu mana)
+  //        transaksi_item_variasi (snapshot pilihan di nota; histori tetap utuh)
+  // Semua perintah CREATE ... IF NOT EXISTS: aman dijalankan berulang,
+  // tidak menyentuh data transaksi yang sudah ada.
+
+  Future<void> _migrasiVariasi(Database d) async {
+    await d.transaction((tx) async {
+      await tx.execute('''
+        CREATE TABLE IF NOT EXISTS variasi_grup (
+          id        INTEGER PRIMARY KEY AUTOINCREMENT,
+          nama      TEXT NOT NULL,
+          wajib     INTEGER NOT NULL DEFAULT 0,
+          maks_pilih INTEGER NOT NULL DEFAULT 1,
+          urutan    INTEGER NOT NULL DEFAULT 0,
+          aktif     INTEGER NOT NULL DEFAULT 1
+        )''');
+      await tx.execute('''
+        CREATE TABLE IF NOT EXISTS variasi_opsi (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          grup_id     INTEGER NOT NULL REFERENCES variasi_grup(id) ON DELETE CASCADE,
+          nama        TEXT NOT NULL,
+          harga_tambah INTEGER NOT NULL DEFAULT 0,
+          urutan      INTEGER NOT NULL DEFAULT 0,
+          aktif       INTEGER NOT NULL DEFAULT 1
+        )''');
+      await tx.execute('''
+        CREATE TABLE IF NOT EXISTS variasi_opsi_bahan (
+          id        INTEGER PRIMARY KEY AUTOINCREMENT,
+          opsi_id   INTEGER NOT NULL REFERENCES variasi_opsi(id) ON DELETE CASCADE,
+          bahan_id  INTEGER NOT NULL REFERENCES bahan(id),
+          qty_dasar REAL NOT NULL CHECK (qty_dasar > 0),
+          UNIQUE (opsi_id, bahan_id)
+        )''');
+      await tx.execute('''
+        CREATE TABLE IF NOT EXISTS menu_variasi_grup (
+          menu_id  INTEGER NOT NULL REFERENCES menu(id) ON DELETE CASCADE,
+          grup_id  INTEGER NOT NULL REFERENCES variasi_grup(id) ON DELETE CASCADE,
+          urutan   INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (menu_id, grup_id)
+        )''');
+      await tx.execute('''
+        CREATE TABLE IF NOT EXISTS transaksi_item_variasi (
+          id        INTEGER PRIMARY KEY AUTOINCREMENT,
+          item_id   INTEGER NOT NULL REFERENCES transaksi_item(id) ON DELETE CASCADE,
+          grup_id   INTEGER,
+          opsi_id   INTEGER,
+          grup_nama TEXT NOT NULL,
+          opsi_nama TEXT NOT NULL,
+          harga     INTEGER NOT NULL DEFAULT 0,
+          hpp       REAL NOT NULL DEFAULT 0
+        )''');
+      await tx.execute(
+          'CREATE INDEX IF NOT EXISTS idx_variasi_opsi_grup ON variasi_opsi(grup_id)');
+      await tx.execute(
+          'CREATE INDEX IF NOT EXISTS idx_menu_variasi_grup ON menu_variasi_grup(grup_id)');
+      await tx.execute(
+          'CREATE INDEX IF NOT EXISTS idx_tiv_item ON transaksi_item_variasi(item_id)');
+    });
+  }
+
+  Future<List<VariasiGrup>> _muatGrup(DatabaseExecutor d,
+      {int? menuId, bool hanyaAktif = false}) async {
+    final grupRows = menuId == null
+        ? await d.query('variasi_grup',
+            where: hanyaAktif ? 'aktif = 1' : null, orderBy: 'urutan, nama COLLATE NOCASE')
+        : await d.rawQuery('''
+            SELECT g.* FROM variasi_grup g
+            JOIN menu_variasi_grup mg ON mg.grup_id = g.id
+            WHERE mg.menu_id = ? ${hanyaAktif ? 'AND g.aktif = 1' : ''}
+            ORDER BY mg.urutan, g.id''', [menuId]);
+    final out = <VariasiGrup>[];
+    for (final g in grupRows) {
+      final gid = g['id'] as int;
+      final opsiRows = await d.query('variasi_opsi',
+          where: hanyaAktif ? 'grup_id = ? AND aktif = 1' : 'grup_id = ?',
+          whereArgs: [gid],
+          orderBy: 'urutan, id');
+      final opsi = <VariasiOpsi>[];
+      for (final o in opsiRows) {
+        final oid = o['id'] as int;
+        final bRows = await d.rawQuery('''
+          SELECT ob.bahan_id, ob.qty_dasar, b.nama, b.satuan_dasar
+          FROM variasi_opsi_bahan ob JOIN bahan b ON b.id = ob.bahan_id
+          WHERE ob.opsi_id = ? ORDER BY b.nama COLLATE NOCASE''', [oid]);
+        opsi.add(VariasiOpsi(
+          id: oid,
+          grupId: gid,
+          nama: o['nama'] as String,
+          hargaTambah: (o['harga_tambah'] as num).toInt(),
+          aktif: (o['aktif'] as int) == 1,
+          bahan: bRows
+              .map((b) => VariasiBahan(
+                    bahanId: b['bahan_id'] as int,
+                    nama: b['nama'] as String,
+                    satuan: b['satuan_dasar'] as String,
+                    qtyDasar: (b['qty_dasar'] as num).toDouble(),
+                  ))
+              .toList(),
+        ));
+      }
+      final menuRows = await d.query('menu_variasi_grup',
+          columns: ['menu_id'], where: 'grup_id = ?', whereArgs: [gid]);
+      out.add(VariasiGrup(
+        id: gid,
+        nama: g['nama'] as String,
+        wajib: (g['wajib'] as int) == 1,
+        maksPilih: g['maks_pilih'] as int,
+        aktif: (g['aktif'] as int) == 1,
+        opsi: opsi,
+        menuIds: menuRows.map((m) => m['menu_id'] as int).toList(),
+      ));
+    }
+    return out;
+  }
+
+  /// Semua kelompok variasi (termasuk nonaktif) untuk halaman manajemen.
+  Future<List<VariasiGrup>> daftarGrupVariasi() async => _muatGrup(await _db);
+
+  /// Kelompok + opsi AKTIF yang berlaku untuk satu menu (dipakai kasir).
+  Future<List<VariasiGrup>> grupUntukMenu(int menuId) async =>
+      _muatGrup(await _db, menuId: menuId, hanyaAktif: true);
+
+  Future<int> simpanGrupVariasi({
+    int? id,
+    required String nama,
+    bool wajib = false,
+    int maksPilih = 1, // 1 = pilih satu, >1 = batas, 0 = tanpa batas
+    bool aktif = true,
+  }) async {
+    final n = nama.trim();
+    if (n.isEmpty) throw PosException('Nama kelompok variasi wajib diisi');
+    if (maksPilih < 0) throw PosException('Batas pilihan tidak valid');
+    final d = await _db;
+    final dup = await d.query('variasi_grup',
+        where: 'nama = ? COLLATE NOCASE AND id != ?', whereArgs: [n, id ?? -1]);
+    if (dup.isNotEmpty) throw PosException('Kelompok "$n" sudah ada');
+    final data = {
+      'nama': n,
+      'wajib': wajib ? 1 : 0,
+      'maks_pilih': maksPilih,
+      'aktif': aktif ? 1 : 0,
+    };
+    if (id == null) return d.insert('variasi_grup', data);
+    await d.update('variasi_grup', data, where: 'id = ?', whereArgs: [id]);
+    return id;
+  }
+
+  /// Histori nota tidak terpengaruh: nota menyimpan salinan nama & harga variasi.
+  Future<void> hapusGrupVariasi(int id) async {
+    final d = await _db;
+    await d.transaction((tx) async {
+      await tx.rawDelete(
+          'DELETE FROM variasi_opsi_bahan WHERE opsi_id IN (SELECT id FROM variasi_opsi WHERE grup_id = ?)',
+          [id]);
+      await tx.delete('variasi_opsi', where: 'grup_id = ?', whereArgs: [id]);
+      await tx.delete('menu_variasi_grup', where: 'grup_id = ?', whereArgs: [id]);
+      await tx.delete('variasi_grup', where: 'id = ?', whereArgs: [id]);
+    });
+  }
+
+  Future<int> simpanOpsiVariasi({
+    int? id,
+    required int grupId,
+    required String nama,
+    int hargaTambah = 0,
+    bool aktif = true,
+    List<VariasiBahan> bahan = const [],
+  }) async {
+    final n = nama.trim();
+    if (n.isEmpty) throw PosException('Nama opsi wajib diisi');
+    if (hargaTambah < 0) throw PosException('Harga tambahan tidak boleh minus');
+    final qtyPerBahan = <int, double>{};
+    for (final b in bahan) {
+      if (b.qtyDasar <= 0) throw PosException('Jumlah bahan harus lebih dari 0');
+      qtyPerBahan[b.bahanId] = (qtyPerBahan[b.bahanId] ?? 0) + b.qtyDasar;
+    }
+    final d = await _db;
+    return d.transaction((tx) async {
+      final dup = await tx.query('variasi_opsi',
+          where: 'grup_id = ? AND nama = ? COLLATE NOCASE AND id != ?',
+          whereArgs: [grupId, n, id ?? -1]);
+      if (dup.isNotEmpty) throw PosException('Opsi "$n" sudah ada di kelompok ini');
+      final data = {
+        'grup_id': grupId,
+        'nama': n,
+        'harga_tambah': hargaTambah,
+        'aktif': aktif ? 1 : 0,
+      };
+      late final int opsiId;
+      if (id == null) {
+        opsiId = await tx.insert('variasi_opsi', data);
+      } else {
+        opsiId = id;
+        await tx.update('variasi_opsi', data, where: 'id = ?', whereArgs: [id]);
+      }
+      await tx.delete('variasi_opsi_bahan', where: 'opsi_id = ?', whereArgs: [opsiId]);
+      for (final e in qtyPerBahan.entries) {
+        await tx.insert('variasi_opsi_bahan',
+            {'opsi_id': opsiId, 'bahan_id': e.key, 'qty_dasar': e.value});
+      }
+      return opsiId;
+    });
+  }
+
+  Future<void> hapusOpsiVariasi(int id) async {
+    final d = await _db;
+    await d.transaction((tx) async {
+      await tx.delete('variasi_opsi_bahan', where: 'opsi_id = ?', whereArgs: [id]);
+      await tx.delete('variasi_opsi', where: 'id = ?', whereArgs: [id]);
+    });
+  }
+
+  /// Menentukan kelompok ini berlaku di menu mana saja (mengganti seluruh relasi).
+  Future<void> setMenuUntukGrup(int grupId, List<int> menuIds) async {
+    final d = await _db;
+    await d.transaction((tx) async {
+      await tx.delete('menu_variasi_grup', where: 'grup_id = ?', whereArgs: [grupId]);
+      for (final m in menuIds.toSet()) {
+        await tx.insert('menu_variasi_grup', {'menu_id': m, 'grup_id': grupId},
+            conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+    });
+  }
+
+  /// Membuat variasi standar Seblak (idempotent, aman dipanggil berulang):
+  /// Level Pedas, Kuah, Rasa, dan Topping Tambahan (dari bahan prasmanan),
+  /// lalu memasangnya ke semua menu aktif. Mengembalikan jumlah kelompok baru.
+  Future<int> buatVariasiAwal() async {
+    final d = await _db;
+    return d.transaction((tx) async {
+      var dibuat = 0;
+
+      Future<int> grup(String nama, {int maks = 1}) async {
+        final r = await tx.query('variasi_grup',
+            where: 'nama = ? COLLATE NOCASE', whereArgs: [nama]);
+        if (r.isNotEmpty) return r.first['id'] as int;
+        dibuat++;
+        return tx.insert('variasi_grup',
+            {'nama': nama, 'wajib': 0, 'maks_pilih': maks, 'aktif': 1});
+      }
+
+      Future<void> opsi(int gid, String nama,
+          {int harga = 0, int urutan = 0, int? bahanId, double qty = 0}) async {
+        final r = await tx.query('variasi_opsi',
+            where: 'grup_id = ? AND nama = ? COLLATE NOCASE', whereArgs: [gid, nama]);
+        if (r.isNotEmpty) return;
+        final oid = await tx.insert('variasi_opsi', {
+          'grup_id': gid,
+          'nama': nama,
+          'harga_tambah': harga,
+          'urutan': urutan,
+          'aktif': 1,
+        });
+        if (bahanId != null && qty > 0) {
+          await tx.insert('variasi_opsi_bahan',
+              {'opsi_id': oid, 'bahan_id': bahanId, 'qty_dasar': qty});
+        }
+      }
+
+      final gPedas = await grup('Level Pedas');
+      for (var i = 0; i <= 10; i++) {
+        await opsi(gPedas, 'Level $i', urutan: i);
+      }
+      final gKuah = await grup('Kuah');
+      for (var i = 0; i < kKuah.length; i++) {
+        await opsi(gKuah, kKuah[i], urutan: i);
+      }
+      final gRasa = await grup('Rasa');
+      for (var i = 0; i < kRasa.length; i++) {
+        await opsi(gRasa, kRasa[i], urutan: i);
+      }
+      final gTopping = await grup('Topping Tambahan', maks: 0);
+      final tb = await tx.query('bahan',
+          where: 'aktif = 1 AND bisa_prasmanan = 1 AND harga_prasmanan > 0',
+          orderBy: 'nama COLLATE NOCASE');
+      for (final b in tb) {
+        await opsi(gTopping, b['nama'] as String,
+            harga: (b['harga_prasmanan'] as num).toInt(),
+            bahanId: b['id'] as int,
+            qty: (b['qty_prasmanan'] as num).toDouble());
+      }
+
+      final menus = await tx.query('menu', columns: ['id'], where: 'aktif = 1');
+      for (final g in [gPedas, gKuah, gRasa, gTopping]) {
+        for (final m in menus) {
+          await tx.insert('menu_variasi_grup', {'menu_id': m['id'], 'grup_id': g},
+              conflictAlgorithm: ConflictAlgorithm.ignore);
+        }
+      }
+      return dibuat;
+    });
+  }
+
+  /// Bahan ringkas (id, nama, satuan_dasar) untuk pilihan di form opsi.
+  Future<List<Map<String, Object?>>> daftarBahanRingkas() async {
+    final d = await _db;
+    return d.rawQuery(
+        'SELECT id, nama, satuan_dasar FROM bahan WHERE aktif = 1 ORDER BY nama COLLATE NOCASE');
+  }
+
+  // ------------------------------------------------------------ kategori menu
+
+  Future<List<Map<String, Object?>>> daftarMenuKategori() async {
+    final d = await _db;
+    return d.rawQuery('SELECT id, nama, kategori, aktif FROM menu ORDER BY nama COLLATE NOCASE');
+  }
+
+  Future<void> setKategoriMenu(int menuId, String? kategori) async {
+    final k = kategori?.trim();
+    final d = await _db;
+    await d.update('menu', {'kategori': (k == null || k.isEmpty) ? null : k},
+        where: 'id = ?', whereArgs: [menuId]);
+  }
+
+  /// Daftar kategori untuk filter dashboard (menu tanpa kategori = "Lainnya").
+  Future<List<String>> daftarKategoriMenu() async {
+    final d = await _db;
+    final r = await d.rawQuery('''
+      SELECT DISTINCT COALESCE(NULLIF(TRIM(kategori), ''), 'Lainnya') AS k
+      FROM menu WHERE aktif = 1 ORDER BY k COLLATE NOCASE''');
+    final out = r.map((e) => e['k'] as String).toList();
+    if (!out.contains('Prasmanan')) out.add('Prasmanan');
+    return out;
+  }
+
+  // ------------------------------------------------- ringkasan dashboard terfilter
+
+  ({String where, List<Object?> args}) _filterRingkas(
+      String dari, String sampai, int? menuId, String? kategori) {
+    final w = StringBuffer("t.status = 'SELESAI' AND date(t.waktu) BETWEEN ? AND ?");
+    final a = <Object?>[dari, sampai];
+    if (menuId != null) {
+      w.write(' AND ti.menu_id = ?');
+      a.add(menuId);
+    }
+    if (kategori != null && kategori.isNotEmpty) {
+      w.write(" AND (CASE WHEN ti.tipe = 'PRASMANAN' THEN 'Prasmanan' "
+          "ELSE COALESCE(NULLIF(TRIM(m.kategori), ''), 'Lainnya') END) = ?");
+      a.add(kategori);
+    }
+    return (where: w.toString(), args: a);
+  }
+
+  /// Total untuk rentang tanggal 'yyyy-MM-dd'. Filter menu/kategori opsional.
+  Future<Map<String, Object?>> ringkasTotalMenu(
+      {required String dari, required String sampai, int? menuId, String? kategori}) async {
+    final d = await _db;
+    final f = _filterRingkas(dari, sampai, menuId, kategori);
+    final r = await d.rawQuery('''
+      SELECT COUNT(DISTINCT t.id) AS jumlah_transaksi,
+             COALESCE(SUM(ti.qty), 0) AS qty,
+             COALESCE(SUM(ti.qty * ti.harga_jual), 0) AS omzet,
+             COALESCE(SUM(ti.qty * ti.hpp_snapshot), 0) AS hpp,
+             COALESCE(SUM(ti.qty * (ti.harga_jual - ti.hpp_snapshot)), 0) AS laba
+      FROM transaksi t
+      JOIN transaksi_item ti ON ti.transaksi_id = t.id
+      LEFT JOIN menu m ON m.id = ti.menu_id
+      WHERE ${f.where}''', f.args);
+    return r.first;
+  }
+
+  /// Performa per menu (qty, omzet, hpp, laba), urut omzet terbesar.
+  Future<List<Map<String, Object?>>> ringkasPerMenu(
+      {required String dari, required String sampai, int? menuId, String? kategori}) async {
+    final d = await _db;
+    final f = _filterRingkas(dari, sampai, menuId, kategori);
+    return d.rawQuery('''
+      SELECT ti.menu_id AS menu_id, ti.nama_item AS nama,
+             CASE WHEN ti.tipe = 'PRASMANAN' THEN 'Prasmanan'
+                  ELSE COALESCE(NULLIF(TRIM(m.kategori), ''), 'Lainnya') END AS kategori,
+             SUM(ti.qty) AS qty,
+             SUM(ti.qty * ti.harga_jual) AS omzet,
+             SUM(ti.qty * ti.hpp_snapshot) AS hpp,
+             SUM(ti.qty * (ti.harga_jual - ti.hpp_snapshot)) AS laba
+      FROM transaksi t
+      JOIN transaksi_item ti ON ti.transaksi_id = t.id
+      LEFT JOIN menu m ON m.id = ti.menu_id
+      WHERE ${f.where}
+      GROUP BY ti.menu_id, ti.nama_item
+      ORDER BY omzet DESC''', f.args);
+  }
+
+  /// Variasi paling sering dipilih pada rentang & filter yang sama.
+  Future<List<Map<String, Object?>>> ringkasVariasiTerjual(
+      {required String dari, required String sampai, int? menuId, String? kategori}) async {
+    final d = await _db;
+    final f = _filterRingkas(dari, sampai, menuId, kategori);
+    return d.rawQuery('''
+      SELECT v.grup_nama AS grup, v.opsi_nama AS opsi,
+             SUM(ti.qty) AS qty, SUM(ti.qty * v.harga) AS omzet
+      FROM transaksi t
+      JOIN transaksi_item ti ON ti.transaksi_id = t.id
+      JOIN transaksi_item_variasi v ON v.item_id = ti.id
+      LEFT JOIN menu m ON m.id = ti.menu_id
+      WHERE ${f.where}
+      GROUP BY v.grup_nama, v.opsi_nama
+      ORDER BY qty DESC LIMIT 10''', f.args);
+  }
 }
 
 class _BarisTopping {
@@ -909,11 +1385,22 @@ class _BarisTopping {
   _BarisTopping(this.bahanId, this.nama, this.jenis, this.pick, this.qtyDasar, this.harga, this.hpp);
 }
 
+class _BarisVariasi {
+  final int grupId;
+  final int opsiId;
+  final String grupNama;
+  final String opsiNama;
+  final int harga;
+  final double hpp;
+  _BarisVariasi(this.grupId, this.opsiId, this.grupNama, this.opsiNama, this.harga, this.hpp);
+}
+
 class _Hitung {
   final CartItem item;
   String nama;
   int harga = 0;
   double hpp = 0;
   final List<_BarisTopping> baris = [];
+  final List<_BarisVariasi> variasi = [];
   _Hitung(this.item) : nama = item.namaItem;
 }

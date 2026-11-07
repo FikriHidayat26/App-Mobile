@@ -8,6 +8,7 @@ import 'hpp_screen.dart';
 import 'models.dart';
 import 'pos_repository.dart';
 import 'printer_screen.dart';
+import 'variasi_manajemen_screen.dart';
 
 double? _angka(String s) => double.tryParse(s.trim().replaceAll(',', '.'));
 int? _bulat(String s) => int.tryParse(s.trim().replaceAll('.', ''));
@@ -19,7 +20,7 @@ class ManajemenScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 6,
+      length: 7,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Kelola Menu & Bahan'),
@@ -33,6 +34,7 @@ class ManajemenScreen extends StatelessWidget {
           ],
           bottom: const TabBar(isScrollable: true, tabs: [
             Tab(text: 'Menu'),
+            Tab(text: 'Variasi'),
             Tab(text: 'HPP'),
             Tab(text: 'Bahan'),
             Tab(text: 'Kulak'),
@@ -42,6 +44,7 @@ class ManajemenScreen extends StatelessWidget {
         ),
         body: TabBarView(children: [
           MenuTab(repo: repo),
+          VariasiTab(repo: repo),
           HppTab(repo: repo),
           BahanTab(repo: repo),
           KulakTab(repo: repo),
@@ -106,6 +109,46 @@ class _MenuTabState extends State<MenuTab> {
     }
   }
 
+  Future<void> _ubahKategori(Map<String, Object?> m, List<Map<String, Object?>> semua) async {
+    final c = TextEditingController(text: '${m['kategori'] ?? ''}');
+    final saran = semua
+        .map((e) => '${e['kategori'] ?? ''}'.trim())
+        .where((k) => k.isNotEmpty)
+        .toSet()
+        .toList()
+      ..sort();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => AlertDialog(
+          title: Text('Kategori "${m['nama']}"'),
+          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            TextField(controller: c, decoration: const InputDecoration(labelText: 'Kategori (Seblak, Minuman...)')),
+            if (saran.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Wrap(spacing: 6, children: [
+                for (final k in saran) ActionChip(label: Text(k), onPressed: () => setD(() => c.text = k)),
+              ]),
+            ],
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Simpan')),
+          ],
+        ),
+      ),
+    );
+    final teks = c.text;
+    WidgetsBinding.instance.addPostFrameCallback((_) => c.dispose());
+    if (ok != true) return;
+    try {
+      await widget.repo.setKategoriMenu(m['id'] as int, teks);
+      _refresh();
+    } catch (e) {
+      if (mounted) snack(context, 'Gagal: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -126,7 +169,9 @@ class _MenuTabState extends State<MenuTab> {
               enabled: true,
               title: Text('${m['nama']}',
                   style: TextStyle(color: aktif ? null : Colors.grey, fontWeight: FontWeight.w600)),
-              subtitle: Text('Jual ${rp(n(m['harga_jual']))} • HPP bahan ${rp(n(m['hpp_bahan']))}'),
+              isThreeLine: true,
+              subtitle: Text('Jual ${rp(n(m['harga_jual']))} • HPP bahan ${rp(n(m['hpp_bahan']))}\n'
+                  'Kategori: ${'${m['kategori'] ?? ''}'.trim().isEmpty ? 'Lainnya' : m['kategori']}'),
               onTap: () async {
                 await Navigator.push(
                     context,
@@ -135,6 +180,10 @@ class _MenuTabState extends State<MenuTab> {
                 _refresh();
               },
               trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                IconButton(
+                    tooltip: 'Kategori',
+                    icon: const Icon(Icons.label_outline),
+                    onPressed: () => _ubahKategori(m, data)),
                 IconButton(
                     tooltip: 'Duplikat',
                     icon: const Icon(Icons.copy),
