@@ -867,7 +867,7 @@ class PosRepository {
   Future<double> overheadHarian() async {
     final database = await _db;
     final r = await database.rawQuery('''
-      SELECT COALESCE(SUM(CASE periode WHEN 'BULANAN' THEN nominal / 30.0 WHEN 'MINGGUAN' THEN nominal / 7.0 ELSE nominal END),0) AS v
+      SELECT COALESCE(SUM(CASE periode WHEN 'BULANAN' THEN nominal / 30.0 WHEN 'MINGGUAN' THEN nominal * 52.0 / 12 / 30 ELSE nominal END),0) AS v
       FROM overhead WHERE aktif = 1''');
     return (r.first['v'] as num).toDouble();
   }
@@ -961,6 +961,7 @@ class PosRepository {
     final path = d.path;
     await d.close();
     _dbSiap = null;
+    DatabaseHelper.instance.lepas();
     for (final akhiran in ['-wal', '-shm', '-journal']) {
       final x = File('$path$akhiran');
       if (await x.exists()) await x.delete();

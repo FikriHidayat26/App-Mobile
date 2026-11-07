@@ -15,6 +15,10 @@ class DatabaseHelper {
   Database? _db;
   Future<Database> get database async => _db ??= await _buka();
 
+  /// Dipakai saat restore: buang referensi DB lama (yang sudah ditutup) agar
+  /// pembukaan berikutnya membaca berkas hasil pemulihan.
+  void lepas() => _db = null;
+
   Future<Database> _buka() async {
     final path = p.join(await getDatabasesPath(), dbName);
     return openDatabase(

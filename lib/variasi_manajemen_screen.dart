@@ -30,6 +30,14 @@ class VariasiManajemenScreen extends StatelessWidget {
 
 // =============================================================== TAB VARIASI
 
+/// Tab "Variasi" di Kelola (dipakai manajemen_screen.dart).
+class VariasiTab extends StatelessWidget {
+  final PosRepository repo;
+  const VariasiTab({super.key, required this.repo});
+  @override
+  Widget build(BuildContext context) => const _VariasiTab();
+}
+
 class _DataVariasi {
   final List<VariasiGrup> grup;
   final List<Map<String, Object?>> menus;
@@ -350,13 +358,24 @@ class _VariasiTabState extends State<_VariasiTab> {
           if (!snap.hasData) return const Center(child: CircularProgressIndicator());
           final d = snap.data!;
           if (d.grup.isEmpty) {
-            return const Center(
+            return Center(
               child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text(
-                    'Belum ada variasi.\nTekan "Kelompok" untuk membuat, misalnya "Level Pedas", '
-                    'lalu tambahkan opsinya dan pasang ke menu.',
-                    textAlign: TextAlign.center),
+                padding: const EdgeInsets.all(24),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  const Text(
+                      'Belum ada variasi.\nTekan "Kelompok" untuk membuat, misalnya "Level Pedas", '
+                      'lalu tambahkan opsinya dan pasang ke menu.',
+                      textAlign: TextAlign.center),
+                  const SizedBox(height: 16),
+                  FilledButton.icon(
+                    icon: const Icon(Icons.auto_fix_high),
+                    label: const Text('Buat variasi standar seblak'),
+                    onPressed: () => _aman(() async {
+                      final n = await _repo.buatVariasiAwal();
+                      if (mounted) snack(context, '$n kelompok dibuat: Level Pedas, Kuah, Rasa, Topping');
+                    }),
+                  ),
+                ]),
               ),
             );
           }

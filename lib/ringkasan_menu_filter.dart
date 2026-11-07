@@ -2,14 +2,15 @@
 // periode (Harian / Mingguan / Bulanan), kategori, dan menu tertentu.
 //
 // Pasang di dashboard_screen.dart (di dalam ListView/Column), cukup satu baris:
-//   const RingkasanMenuFilter(),
+//   RingkasanMenuFilter(repo: widget.repo),
 import 'package:flutter/material.dart';
 
 import 'helpers.dart';
 import 'pos_repository.dart';
 
 class RingkasanMenuFilter extends StatefulWidget {
-  const RingkasanMenuFilter({super.key});
+  final PosRepository repo;
+  const RingkasanMenuFilter({super.key, required this.repo});
   @override
   State<RingkasanMenuFilter> createState() => _RingkasanMenuFilterState();
 }
@@ -24,7 +25,7 @@ class _Hasil {
 }
 
 class _RingkasanMenuFilterState extends State<RingkasanMenuFilter> {
-  final _repo = PosRepository();
+  PosRepository get _repo => widget.repo;
 
   int _periode = 0; // 0 = harian, 1 = mingguan (7 hari terakhir), 2 = bulanan (bulan ini)
   String? _kategori;
