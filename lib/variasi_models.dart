@@ -34,12 +34,27 @@ class VariasiOpsi {
   });
 }
 
+/// Teks aturan ala GoFood: "Pilih 1", "Pilih minimal 1, maksimal 3", "Maksimal 3", "Bebas pilih".
+String aturanVariasi({required bool wajib, required int min, required int maks}) {
+  final mn = wajib ? (min < 1 ? 1 : min) : 0;
+  if (mn > 0 && mn == maks) return 'Pilih $mn';
+  final bagian = <String>[];
+  if (mn > 0) bagian.add('minimal $mn');
+  if (maks > 0) bagian.add('maksimal $maks');
+  if (bagian.isEmpty) return 'Bebas pilih';
+  final teks = bagian.join(', ');
+  return mn > 0 ? 'Pilih $teks' : '${teks[0].toUpperCase()}${teks.substring(1)}';
+}
+
 class VariasiGrup {
   final int id;
   final String nama;
   final bool wajib;
 
-  /// 1 = pilih satu, >1 = batas jumlah pilihan, 0 = tanpa batas.
+  /// Minimal pilihan (hanya berlaku bila wajib). Selalu >= 1 saat wajib.
+  final int minPilih;
+
+  /// Maksimal pilihan: 1 = pilih satu, N = batas, 0 = tanpa batas.
   final int maksPilih;
   final bool aktif;
   final List<VariasiOpsi> opsi;
@@ -48,6 +63,7 @@ class VariasiGrup {
     required this.id,
     required this.nama,
     required this.wajib,
+    this.minPilih = 0,
     required this.maksPilih,
     required this.aktif,
     this.opsi = const [],
@@ -56,13 +72,16 @@ class VariasiGrup {
 
   bool get pilihSatu => maksPilih == 1;
 
-  String get keterangan {
-    final aturan = wajib ? 'Wajib' : 'Opsional';
-    final batas = maksPilih == 1
-        ? 'pilih 1'
-        : (maksPilih == 0 ? 'pilih bebas' : 'maks $maksPilih');
-    return '$aturan • $batas';
+  /// Minimal yang benar-benar harus dipilih (tidak melebihi jumlah opsi aktif).
+  int get minEfektif {
+    final mn = wajib ? (minPilih < 1 ? 1 : minPilih) : 0;
+    final aktifCount = opsi.where((o) => o.aktif).length;
+    return mn > aktifCount ? aktifCount : mn;
   }
+
+  String get aturan => aturanVariasi(wajib: wajib, min: minPilih, maks: maksPilih);
+
+  String get keterangan => '${wajib ? 'Wajib' : 'Opsional'} • $aturan';
 }
 
 /// Pilihan variasi yang menempel pada satu item keranjang.

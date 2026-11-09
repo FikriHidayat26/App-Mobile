@@ -42,6 +42,7 @@ class PosRepository {
       final d = await DatabaseHelper.instance.database;
       await _migrasiMingguan(d);
       await _migrasiVariasi(d);
+      await _migrasiKategori(d);
       return d;
     } catch (_) {
       _dbSiap = null; // coba lagi di pemanggilan berikutnya
@@ -272,7 +273,10 @@ class PosRepository {
 
   Future<List<Menu>> daftarMenu() async {
     final database = await _db;
-    final r = await database.query('menu', where: 'aktif = 1', orderBy: 'nama COLLATE NOCASE');
+    final r = await database.rawQuery('''
+      SELECT m.id, m.nama, m.harga_jual, m.aktif, m.kategori_id, k.nama AS kategori
+      FROM menu m LEFT JOIN kategori_menu k ON k.id = m.kategori_id
+      WHERE m.aktif = 1 ORDER BY m.nama COLLATE NOCASE''');
     return r.map(Menu.fromMap).toList();
   }
 
@@ -403,7 +407,8 @@ class PosRepository {
           }
         } else {
           final grupRows = await tx.rawQuery('''
-            SELECT g.id, g.nama, g.wajib, g.maks_pilih
+            SELECT g.id, g.nama, g.wajib, g.min_pilih, g.maks_pilih,
+                   (SELECT COUNT(*) FROM variasi_opsi o WHERE o.grup_id = g.id AND o.aktif = 1) AS n_opsi
             FROM variasi_grup g JOIN menu_variasi_grup mg ON mg.grup_id = g.id
             WHERE mg.menu_id = ? AND g.aktif = 1''', [c.menu!.id]);
           final grupById = {for (final g in grupRows) g['id'] as int: g};
@@ -419,10 +424,18 @@ class PosRepository {
           }
           for (final g in grupRows) {
             final gid = g['id'] as int;
+            final nOpsi = (g['n_opsi'] as num).toInt();
+            if (nOpsi == 0) continue; // kelompok tanpa opsi aktif tidak dipakai
             final jumlah = perGrup[gid]?.length ?? 0;
             final maks = g['maks_pilih'] as int; // 0 = tanpa batas
-            if ((g['wajib'] as int) == 1 && jumlah == 0) {
-              throw PosException('Pilih "${g['nama']}" untuk ${h.nama}');
+            var minimal = (g['min_pilih'] as int);
+            if ((g['wajib'] as int) == 1 && minimal < 1) minimal = 1;
+            if ((g['wajib'] as int) != 1) minimal = 0;
+            if (minimal > nOpsi) minimal = nOpsi;
+            if (jumlah < minimal) {
+              throw PosException(minimal == 1
+                  ? 'Pilih "${g['nama']}" untuk ${h.nama}'
+                  : '"${g['nama']}" untuk ${h.nama}: pilih minimal $minimal');
             }
             if (maks > 0 && jumlah > maks) {
               throw PosException('"${g['nama']}" maksimal $maks pilihan');
@@ -670,8 +683,9 @@ class PosRepository {
   Future<List<Map<String, Object?>>> daftarMenuLengkap() async {
     final database = await _db;
     return database.rawQuery('''
-      SELECT m.id, m.nama, m.kategori, m.harga_jual, m.aktif, h.hpp_bahan
+      SELECT m.id, m.nama, k.nama AS kategori, m.kategori_id, m.harga_jual, m.aktif, h.hpp_bahan
       FROM menu m JOIN v_hpp_menu h ON h.menu_id = m.id
+      LEFT JOIN kategori_menu k ON k.id = m.kategori_id
       ORDER BY m.aktif DESC, m.nama COLLATE NOCASE''');
   }
 
@@ -688,19 +702,25 @@ class PosRepository {
     if (d.isNotEmpty) throw PosException('Menu "${nama.trim()}" sudah ada');
   }
 
-  Future<int> tambahMenu(String nama, int harga) async {
+  Future<int> tambahMenu(String nama, int harga, {int? kategoriId}) async {
     final database = await _db;
     return database.transaction((tx) async {
       await _cekNamaMenu(tx, nama, null);
-      return tx.insert('menu', {'nama': nama.trim(), 'kategori': 'Seblak', 'harga_jual': harga});
+      return tx.insert('menu',
+          {'nama': nama.trim(), 'kategori_id': kategoriId, 'harga_jual': harga});
     });
   }
 
-  Future<int> duplikatMenu(int sumberId, String nama, int harga) async {
+  Future<int> duplikatMenu(int sumberId, String nama, int harga, {int? kategoriId}) async {
     final database = await _db;
     return database.transaction((tx) async {
       await _cekNamaMenu(tx, nama, null);
-      final id = await tx.insert('menu', {'nama': nama.trim(), 'kategori': 'Seblak', 'harga_jual': harga});
+      int? kat = kategoriId;
+      if (kat == null) {
+        final src = await tx.query('menu', columns: ['kategori_id'], where: 'id = ?', whereArgs: [sumberId]);
+        kat = src.isEmpty ? null : src.first['kategori_id'] as int?;
+      }
+      final id = await tx.insert('menu', {'nama': nama.trim(), 'kategori_id': kat, 'harga_jual': harga});
       await tx.rawInsert(
           'INSERT INTO resep_item (menu_id, bahan_id, qty_num, qty_den) '
           'SELECT ?, bahan_id, qty_num, qty_den FROM resep_item WHERE menu_id = ?',
@@ -987,6 +1007,7 @@ class PosRepository {
           id        INTEGER PRIMARY KEY AUTOINCREMENT,
           nama      TEXT NOT NULL,
           wajib     INTEGER NOT NULL DEFAULT 0,
+          min_pilih INTEGER NOT NULL DEFAULT 0,
           maks_pilih INTEGER NOT NULL DEFAULT 1,
           urutan    INTEGER NOT NULL DEFAULT 0,
           aktif     INTEGER NOT NULL DEFAULT 1
@@ -1032,6 +1053,42 @@ class PosRepository {
           'CREATE INDEX IF NOT EXISTS idx_menu_variasi_grup ON menu_variasi_grup(grup_id)');
       await tx.execute(
           'CREATE INDEX IF NOT EXISTS idx_tiv_item ON transaksi_item_variasi(item_id)');
+
+      // Database lama (sebelum min_pilih): tambah kolom, kelompok wajib => minimal 1.
+      final kolom = await tx.rawQuery('PRAGMA table_info(variasi_grup)');
+      if (!kolom.any((e) => e['name'] == 'min_pilih')) {
+        await tx.execute('ALTER TABLE variasi_grup ADD COLUMN min_pilih INTEGER NOT NULL DEFAULT 0');
+        await tx.execute('UPDATE variasi_grup SET min_pilih = 1 WHERE wajib = 1');
+      }
+    });
+  }
+
+  /// Kategori menu dinamis: tabel kategori_menu + menu.kategori_id (FK).
+  /// Idempotent. Teks kategori lama di kolom menu.kategori dipindahkan SEKALI,
+  /// yaitu saat kolom kategori_id pertama kali dibuat; data transaksi tidak disentuh.
+  Future<void> _migrasiKategori(Database d) async {
+    await d.transaction((tx) async {
+      await tx.execute('''
+        CREATE TABLE IF NOT EXISTS kategori_menu (
+          id     INTEGER PRIMARY KEY AUTOINCREMENT,
+          nama   TEXT NOT NULL UNIQUE COLLATE NOCASE,
+          urutan INTEGER NOT NULL DEFAULT 0
+        )''');
+      final kolom = await tx.rawQuery('PRAGMA table_info(menu)');
+      if (kolom.any((e) => e['name'] == 'kategori_id')) return;
+
+      await tx.execute(
+          'ALTER TABLE menu ADD COLUMN kategori_id INTEGER REFERENCES kategori_menu(id) ON DELETE SET NULL');
+      await tx.execute('''
+        INSERT OR IGNORE INTO kategori_menu (nama)
+        SELECT DISTINCT TRIM(kategori) FROM menu
+        WHERE LENGTH(TRIM(COALESCE(kategori, ''))) > 0''');
+      await tx.execute('UPDATE kategori_menu SET urutan = id WHERE urutan = 0');
+      await tx.execute('''
+        UPDATE menu SET kategori_id = (
+          SELECT k.id FROM kategori_menu k WHERE k.nama = TRIM(menu.kategori) COLLATE NOCASE)
+        WHERE LENGTH(TRIM(COALESCE(kategori, ''))) > 0''');
+      await tx.execute('CREATE INDEX IF NOT EXISTS idx_menu_kategori ON menu(kategori_id)');
     });
   }
 
@@ -1081,6 +1138,7 @@ class PosRepository {
         id: gid,
         nama: g['nama'] as String,
         wajib: (g['wajib'] as int) == 1,
+        minPilih: g['min_pilih'] as int,
         maksPilih: g['maks_pilih'] as int,
         aktif: (g['aktif'] as int) == 1,
         opsi: opsi,
@@ -1101,12 +1159,17 @@ class PosRepository {
     int? id,
     required String nama,
     bool wajib = false,
+    int minPilih = 0, // dipakai bila wajib (otomatis minimal 1)
     int maksPilih = 1, // 1 = pilih satu, >1 = batas, 0 = tanpa batas
     bool aktif = true,
   }) async {
     final n = nama.trim();
     if (n.isEmpty) throw PosException('Nama kelompok variasi wajib diisi');
-    if (maksPilih < 0) throw PosException('Batas pilihan tidak valid');
+    if (maksPilih < 0 || minPilih < 0) throw PosException('Batas pilihan tidak valid');
+    final mn = wajib ? (minPilih < 1 ? 1 : minPilih) : 0;
+    if (maksPilih != 0 && maksPilih < mn) {
+      throw PosException('Maksimal pilihan tidak boleh lebih kecil dari minimal');
+    }
     final d = await _db;
     final dup = await d.query('variasi_grup',
         where: 'nama = ? COLLATE NOCASE AND id != ?', whereArgs: [n, id ?? -1]);
@@ -1114,6 +1177,7 @@ class PosRepository {
     final data = {
       'nama': n,
       'wajib': wajib ? 1 : 0,
+      'min_pilih': mn,
       'maks_pilih': maksPilih,
       'aktif': aktif ? 1 : 0,
     };
@@ -1277,25 +1341,83 @@ class PosRepository {
 
   // ------------------------------------------------------------ kategori menu
 
+  /// Semua kategori + jumlah menu (aktif & nonaktif) di dalamnya.
+  Future<List<Map<String, Object?>>> daftarKategori() async {
+    final d = await _db;
+    return d.rawQuery('''
+      SELECT k.id, k.nama, k.urutan,
+             (SELECT COUNT(*) FROM menu m WHERE m.kategori_id = k.id) AS jumlah_menu,
+             (SELECT COUNT(*) FROM menu m WHERE m.kategori_id = k.id AND m.aktif = 1) AS jumlah_aktif
+      FROM kategori_menu k ORDER BY k.urutan, k.nama COLLATE NOCASE''');
+  }
+
+  Future<int> simpanKategori({int? id, required String nama}) async {
+    final n = nama.trim();
+    if (n.isEmpty) throw PosException('Nama kategori wajib diisi');
+    final d = await _db;
+    return d.transaction((tx) async {
+      final dup = await tx.query('kategori_menu',
+          where: 'nama = ? COLLATE NOCASE AND id != ?', whereArgs: [n, id ?? -1]);
+      if (dup.isNotEmpty) throw PosException('Kategori "$n" sudah ada');
+      if (id == null) {
+        final mx = await tx.rawQuery('SELECT COALESCE(MAX(urutan), 0) + 1 AS u FROM kategori_menu');
+        return tx.insert('kategori_menu', {'nama': n, 'urutan': (mx.first['u'] as num).toInt()});
+      }
+      await tx.update('kategori_menu', {'nama': n}, where: 'id = ?', whereArgs: [id]);
+      return id;
+    });
+  }
+
+  /// Menu di kategori ini menjadi "tanpa kategori"; menu & transaksi tidak ikut terhapus.
+  Future<void> hapusKategori(int id) async {
+    final d = await _db;
+    await d.transaction((tx) async {
+      await tx.update('menu', {'kategori_id': null}, where: 'kategori_id = ?', whereArgs: [id]);
+      await tx.delete('kategori_menu', where: 'id = ?', whereArgs: [id]);
+    });
+  }
+
+  /// Geser urutan tampil kategori di kasir: arah -1 = naik, +1 = turun.
+  Future<void> geserKategori(int id, int arah) async {
+    final d = await _db;
+    await d.transaction((tx) async {
+      final semua = await tx.query('kategori_menu', orderBy: 'urutan, nama COLLATE NOCASE');
+      final i = semua.indexWhere((e) => e['id'] == id);
+      final j = i + arah;
+      if (i < 0 || j < 0 || j >= semua.length) return;
+      final ids = semua.map((e) => e['id'] as int).toList();
+      final tmp = ids[i];
+      ids[i] = ids[j];
+      ids[j] = tmp;
+      for (var u = 0; u < ids.length; u++) {
+        await tx.update('kategori_menu', {'urutan': u + 1}, where: 'id = ?', whereArgs: [ids[u]]);
+      }
+    });
+  }
+
+  /// Menghubungkan menu ke kategori (null = tanpa kategori).
+  Future<void> setKategoriMenu(int menuId, int? kategoriId) async {
+    final d = await _db;
+    await d.update('menu', {'kategori_id': kategoriId}, where: 'id = ?', whereArgs: [menuId]);
+  }
+
+  /// Daftar menu + nama kategorinya (untuk filter dashboard).
   Future<List<Map<String, Object?>>> daftarMenuKategori() async {
     final d = await _db;
-    return d.rawQuery('SELECT id, nama, kategori, aktif FROM menu ORDER BY nama COLLATE NOCASE');
+    return d.rawQuery('''
+      SELECT m.id, m.nama, k.nama AS kategori, m.kategori_id, m.aktif
+      FROM menu m LEFT JOIN kategori_menu k ON k.id = m.kategori_id
+      ORDER BY m.nama COLLATE NOCASE''');
   }
 
-  Future<void> setKategoriMenu(int menuId, String? kategori) async {
-    final k = kategori?.trim();
-    final d = await _db;
-    await d.update('menu', {'kategori': (k == null || k.isEmpty) ? null : k},
-        where: 'id = ?', whereArgs: [menuId]);
-  }
-
-  /// Daftar kategori untuk filter dashboard (menu tanpa kategori = "Lainnya").
+  /// Nama kategori untuk filter dashboard ("Lainnya" = menu tanpa kategori).
   Future<List<String>> daftarKategoriMenu() async {
     final d = await _db;
-    final r = await d.rawQuery('''
-      SELECT DISTINCT COALESCE(NULLIF(TRIM(kategori), ''), 'Lainnya') AS k
-      FROM menu WHERE aktif = 1 ORDER BY k COLLATE NOCASE''');
-    final out = r.map((e) => e['k'] as String).toList();
+    final r = await d.rawQuery('SELECT nama FROM kategori_menu ORDER BY urutan, nama COLLATE NOCASE');
+    final out = r.map((e) => e['nama'] as String).toList();
+    final tanpa = await d.rawQuery(
+        'SELECT COUNT(*) AS c FROM menu WHERE kategori_id IS NULL');
+    if ((tanpa.first['c'] as num) > 0 && !out.contains('Lainnya')) out.add('Lainnya');
     if (!out.contains('Prasmanan')) out.add('Prasmanan');
     return out;
   }
@@ -1312,7 +1434,7 @@ class PosRepository {
     }
     if (kategori != null && kategori.isNotEmpty) {
       w.write(" AND (CASE WHEN ti.tipe = 'PRASMANAN' THEN 'Prasmanan' "
-          "ELSE COALESCE(NULLIF(TRIM(m.kategori), ''), 'Lainnya') END) = ?");
+          "ELSE COALESCE(kk.nama, 'Lainnya') END) = ?");
       a.add(kategori);
     }
     return (where: w.toString(), args: a);
@@ -1332,6 +1454,7 @@ class PosRepository {
       FROM transaksi t
       JOIN transaksi_item ti ON ti.transaksi_id = t.id
       LEFT JOIN menu m ON m.id = ti.menu_id
+      LEFT JOIN kategori_menu kk ON kk.id = m.kategori_id
       WHERE ${f.where}''', f.args);
     return r.first;
   }
@@ -1344,7 +1467,7 @@ class PosRepository {
     return d.rawQuery('''
       SELECT ti.menu_id AS menu_id, ti.nama_item AS nama,
              CASE WHEN ti.tipe = 'PRASMANAN' THEN 'Prasmanan'
-                  ELSE COALESCE(NULLIF(TRIM(m.kategori), ''), 'Lainnya') END AS kategori,
+                  ELSE COALESCE(kk.nama, 'Lainnya') END AS kategori,
              SUM(ti.qty) AS qty,
              SUM(ti.qty * ti.harga_jual) AS omzet,
              SUM(ti.qty * ti.hpp_snapshot) AS hpp,
@@ -1352,6 +1475,7 @@ class PosRepository {
       FROM transaksi t
       JOIN transaksi_item ti ON ti.transaksi_id = t.id
       LEFT JOIN menu m ON m.id = ti.menu_id
+      LEFT JOIN kategori_menu kk ON kk.id = m.kategori_id
       WHERE ${f.where}
       GROUP BY ti.menu_id, ti.nama_item
       ORDER BY omzet DESC''', f.args);
@@ -1369,6 +1493,7 @@ class PosRepository {
       JOIN transaksi_item ti ON ti.transaksi_id = t.id
       JOIN transaksi_item_variasi v ON v.item_id = ti.id
       LEFT JOIN menu m ON m.id = ti.menu_id
+      LEFT JOIN kategori_menu kk ON kk.id = m.kategori_id
       WHERE ${f.where}
       GROUP BY v.grup_nama, v.opsi_nama
       ORDER BY qty DESC LIMIT 10''', f.args);

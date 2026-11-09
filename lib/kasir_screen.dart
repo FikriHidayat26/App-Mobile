@@ -11,6 +11,10 @@ import 'printer_service.dart';
 import 'variasi_models.dart';
 import 'variasi_picker.dart';
 
+// Penanda khusus untuk kartu kategori di layar kasir.
+const int _kSemua = -1; // "Semua menu"
+const int _kTanpa = -2; // menu tanpa kategori
+
 class KasirScreen extends StatefulWidget {
   final PosRepository repo;
   const KasirScreen({super.key, required this.repo});
@@ -20,6 +24,9 @@ class KasirScreen extends StatefulWidget {
 
 class _KasirScreenState extends State<KasirScreen> {
   List<Menu> _menus = [];
+  List<Map<String, Object?>> _kategori = [];
+  int? _katId; // null = tampilan grid kategori; selain itu = isi kategori terpilih
+  String _katNama = '';
   List<Bahan> _bahan = [];
   int _biayaDasar = 0;
   bool _loading = true;
@@ -36,11 +43,15 @@ class _KasirScreenState extends State<KasirScreen> {
   Future<void> _muat() async {
     try {
       final menus = await widget.repo.daftarMenu();
+      final kategori = await widget.repo.daftarKategori();
       final bahan = await widget.repo.daftarBahan();
       final biaya = await widget.repo.biayaDasarPrasmanan();
       if (!mounted) return;
       setState(() {
         _menus = menus;
+        _kategori = kategori;
+        // Kategori yang terpilih sudah dihapus -> kembali ke grid.
+        if (_katId != null && _katId! >= 0 && !kategori.any((k) => k['id'] == _katId)) _katId = null;
         _bahan = bahan;
         _biayaDasar = biaya;
         _loading = false;
@@ -279,7 +290,12 @@ class _KasirScreenState extends State<KasirScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope(
+      canPop: _katId == null || _mode != 0,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) setState(() => _katId = null);
+      },
+      child: Scaffold(
       appBar: AppBar(
         title: const Text('Kasir'),
         actions: [
@@ -314,24 +330,106 @@ class _KasirScreenState extends State<KasirScreen> {
                   Expanded(child: _mode == 0 ? _daftarMenu() : _panelPrasmanan()),
                   _barKeranjang(),
                 ]),
-    );
+    ));
+  }
+
+  List<Menu> get _menuTampil {
+    if (_katId == _kSemua) return _menus;
+    if (_katId == _kTanpa) return _menus.where((m) => m.kategoriId == null).toList();
+    return _menus.where((m) => m.kategoriId == _katId).toList();
   }
 
   Widget _daftarMenu() {
     if (_menus.isEmpty) return const Center(child: Text('Belum ada menu aktif. Tambah di tab Kelola.'));
-    return ListView.separated(
-      itemCount: _menus.length,
-      separatorBuilder: (_, __) => const Divider(height: 1),
-      itemBuilder: (_, i) {
-        final m = _menus[i];
-        return ListTile(
-          title: Text(m.nama, style: const TextStyle(fontWeight: FontWeight.w600)),
-          subtitle: Text(rupiah(m.hargaJual)),
-          trailing: const Icon(Icons.add_circle, color: Colors.deepOrange, size: 30),
-          onTap: () => _buka(menu: m),
-        );
-      },
+    // Belum ada menu yang dikategorikan: tampilkan daftar biasa (perilaku lama).
+    if (!_menus.any((m) => m.kategoriId != null)) return _listMenu(_menus);
+    return _katId == null ? _gridKategori() : _isiKategori();
+  }
+
+  Widget _listMenu(List<Menu> list) => ListView.separated(
+        itemCount: list.length,
+        separatorBuilder: (_, __) => const Divider(height: 1),
+        itemBuilder: (_, i) {
+          final m = list[i];
+          return ListTile(
+            title: Text(m.nama, style: const TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: Text(rupiah(m.hargaJual)),
+            trailing: const Icon(Icons.add_circle, color: Colors.deepOrange, size: 30),
+            onTap: () => _buka(menu: m),
+          );
+        },
+      );
+
+  IconData _ikonKategori(String nama) {
+    final kata = nama.toLowerCase().split(RegExp(r'\s+'));
+    bool ada(List<String> k) => kata.any(k.contains);
+    if (ada(['semua'])) return Icons.apps;
+    if (ada(['tanpa'])) return Icons.label_off_outlined;
+    if (ada(['es', 'teh', 'kopi', 'jus', 'minuman', 'susu'])) return Icons.local_drink;
+    if (ada(['seblak', 'mie', 'bakso', 'soto'])) return Icons.ramen_dining;
+    if (ada(['jajanan', 'snack', 'camilan', 'gorengan'])) return Icons.cookie;
+    return Icons.restaurant_menu;
+  }
+
+  Widget _gridKategori() {
+    final kartu = <({int id, String nama, int jumlah})>[
+      (id: _kSemua, nama: 'Semua menu', jumlah: _menus.length),
+      for (final k in _kategori)
+        if (_menus.any((m) => m.kategoriId == k['id']))
+          (
+            id: k['id'] as int,
+            nama: '${k['nama']}',
+            jumlah: _menus.where((m) => m.kategoriId == k['id']).length
+          ),
+      if (_menus.any((m) => m.kategoriId == null))
+        (id: _kTanpa, nama: 'Tanpa kategori', jumlah: _menus.where((m) => m.kategoriId == null).length),
+    ];
+    return GridView.count(
+      crossAxisCount: 2,
+      padding: const EdgeInsets.all(12),
+      mainAxisSpacing: 10,
+      crossAxisSpacing: 10,
+      childAspectRatio: 1.35,
+      children: [
+        for (final k in kartu)
+          Card(
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: () => setState(() {
+                _katId = k.id;
+                _katNama = k.nama;
+              }),
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  Icon(_ikonKategori(k.nama), size: 34, color: Colors.deepOrange),
+                  const SizedBox(height: 6),
+                  Text(k.nama,
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                  Text('${k.jumlah} menu', style: const TextStyle(fontSize: 12)),
+                ]),
+              ),
+            ),
+          ),
+      ],
     );
+  }
+
+  Widget _isiKategori() {
+    final list = _menuTampil;
+    return Column(children: [
+      ListTile(
+        dense: true,
+        leading: const Icon(Icons.arrow_back),
+        title: Text('$_katNama • ${list.length} menu', style: const TextStyle(fontWeight: FontWeight.bold)),
+        onTap: () => setState(() => _katId = null),
+      ),
+      const Divider(height: 1),
+      Expanded(child: _listMenu(list)),
+    ]);
   }
 
   Widget _panelPrasmanan() {

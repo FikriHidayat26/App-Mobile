@@ -91,14 +91,16 @@ class Bahan {
 class Menu {
   final int? id;
   final String nama;
-  final String? kategori;
+  final String? kategori; // nama kategori (dari tabel kategori_menu)
+  final int? kategoriId;
   final int hargaJual;
-  const Menu({this.id, required this.nama, this.kategori, required this.hargaJual});
+  const Menu({this.id, required this.nama, this.kategori, this.kategoriId, required this.hargaJual});
 
   factory Menu.fromMap(Map<String, Object?> m) => Menu(
         id: m['id'] as int?,
         nama: m['nama'] as String,
         kategori: m['kategori'] as String?,
+        kategoriId: m['kategori_id'] as int?,
         hargaJual: (m['harga_jual'] as num?)?.toInt() ?? 0,
       );
 }

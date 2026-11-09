@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'backup_screen.dart';
 import 'helpers.dart';
 import 'hpp_screen.dart';
+import 'kategori_screen.dart';
 import 'models.dart';
 import 'pos_repository.dart';
 import 'printer_screen.dart';
@@ -20,7 +21,7 @@ class ManajemenScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 7,
+      length: 8,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Kelola Menu & Bahan'),
@@ -34,6 +35,7 @@ class ManajemenScreen extends StatelessWidget {
           ],
           bottom: const TabBar(isScrollable: true, tabs: [
             Tab(text: 'Menu'),
+            Tab(text: 'Kategori'),
             Tab(text: 'Variasi'),
             Tab(text: 'HPP'),
             Tab(text: 'Bahan'),
@@ -44,6 +46,7 @@ class ManajemenScreen extends StatelessWidget {
         ),
         body: TabBarView(children: [
           MenuTab(repo: repo),
+          KategoriTab(repo: repo),
           VariasiTab(repo: repo),
           HppTab(repo: repo),
           BahanTab(repo: repo),
@@ -73,21 +76,38 @@ class _MenuTabState extends State<MenuTab> {
   Future<void> _dialogMenu({Map<String, Object?>? sumber}) async {
     final nama = TextEditingController(text: sumber == null ? '' : '${sumber['nama']} (salinan)');
     final harga = TextEditingController(text: sumber == null ? '' : '${n(sumber['harga_jual']).toInt()}');
+    final kategori = await widget.repo.daftarKategori();
+    int? kategoriId = sumber?['kategori_id'] as int?;
+    if (!mounted) return;
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(sumber == null ? 'Tambah menu' : 'Duplikat menu'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(controller: nama, decoration: const InputDecoration(labelText: 'Nama menu')),
-          TextField(
-              controller: harga,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Harga jual (Rp)')),
-        ]),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Simpan')),
-        ],
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => AlertDialog(
+          title: Text(sumber == null ? 'Tambah menu' : 'Duplikat menu'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(controller: nama, decoration: const InputDecoration(labelText: 'Nama menu')),
+            TextField(
+                controller: harga,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Harga jual (Rp)')),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<int?>(
+              value: kategoriId,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: 'Kategori'),
+              items: [
+                const DropdownMenuItem<int?>(value: null, child: Text('Tanpa kategori')),
+                for (final k in kategori)
+                  DropdownMenuItem<int?>(value: k['id'] as int, child: Text('${k['nama']}')),
+              ],
+              onChanged: (v) => setD(() => kategoriId = v),
+            ),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Simpan')),
+          ],
+        ),
       ),
     );
     final namaTxt = nama.text;
@@ -97,8 +117,8 @@ class _MenuTabState extends State<MenuTab> {
     if (ok != true) return;
     try {
       final id = sumber == null
-          ? await widget.repo.tambahMenu(namaTxt, hargaVal)
-          : await widget.repo.duplikatMenu(sumber['id'] as int, namaTxt, hargaVal);
+          ? await widget.repo.tambahMenu(namaTxt, hargaVal, kategoriId: kategoriId)
+          : await widget.repo.duplikatMenu(sumber['id'] as int, namaTxt, hargaVal, kategoriId: kategoriId);
       if (!mounted) return;
       _refresh();
       await Navigator.push(context,
@@ -109,28 +129,30 @@ class _MenuTabState extends State<MenuTab> {
     }
   }
 
-  Future<void> _ubahKategori(Map<String, Object?> m, List<Map<String, Object?>> semua) async {
-    final c = TextEditingController(text: '${m['kategori'] ?? ''}');
-    final saran = semua
-        .map((e) => '${e['kategori'] ?? ''}'.trim())
-        .where((k) => k.isNotEmpty)
-        .toSet()
-        .toList()
-      ..sort();
+  Future<void> _ubahKategori(Map<String, Object?> m) async {
+    final kategori = await widget.repo.daftarKategori();
+    if (!mounted) return;
+    if (kategori.isEmpty) {
+      snack(context, 'Buat kategori dulu di tab Kategori');
+      return;
+    }
+    int? pilih = m['kategori_id'] as int?;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setD) => AlertDialog(
           title: Text('Kategori "${m['nama']}"'),
-          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            TextField(controller: c, decoration: const InputDecoration(labelText: 'Kategori (Seblak, Minuman...)')),
-            if (saran.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Wrap(spacing: 6, children: [
-                for (final k in saran) ActionChip(label: Text(k), onPressed: () => setD(() => c.text = k)),
-              ]),
+          content: DropdownButtonFormField<int?>(
+            value: pilih,
+            isExpanded: true,
+            decoration: const InputDecoration(labelText: 'Kategori'),
+            items: [
+              const DropdownMenuItem<int?>(value: null, child: Text('Tanpa kategori')),
+              for (final k in kategori)
+                DropdownMenuItem<int?>(value: k['id'] as int, child: Text('${k['nama']}')),
             ],
-          ]),
+            onChanged: (v) => setD(() => pilih = v),
+          ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
             FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Simpan')),
@@ -138,11 +160,9 @@ class _MenuTabState extends State<MenuTab> {
         ),
       ),
     );
-    final teks = c.text;
-    WidgetsBinding.instance.addPostFrameCallback((_) => c.dispose());
     if (ok != true) return;
     try {
-      await widget.repo.setKategoriMenu(m['id'] as int, teks);
+      await widget.repo.setKategoriMenu(m['id'] as int, pilih);
       _refresh();
     } catch (e) {
       if (mounted) snack(context, 'Gagal: $e');
@@ -183,7 +203,7 @@ class _MenuTabState extends State<MenuTab> {
                 IconButton(
                     tooltip: 'Kategori',
                     icon: const Icon(Icons.label_outline),
-                    onPressed: () => _ubahKategori(m, data)),
+                    onPressed: () => _ubahKategori(m)),
                 IconButton(
                     tooltip: 'Duplikat',
                     icon: const Icon(Icons.copy),

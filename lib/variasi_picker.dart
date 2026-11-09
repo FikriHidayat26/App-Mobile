@@ -24,16 +24,39 @@ class VariasiPilihan extends StatelessWidget {
       for (final g in grup) ...[
         Padding(
           padding: const EdgeInsets.only(top: 16, bottom: 4),
-          child: Row(children: [
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Expanded(
-              child: Text(g.nama, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(g.nama, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                Text(
+                  g.aturan,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: (dipilih[g.id]?.length ?? 0) < g.minEfektif
+                        ? Colors.red
+                        : Colors.grey.shade700,
+                  ),
+                ),
+              ]),
             ),
             Text(
-              g.keterangan,
-              style: TextStyle(
-                fontSize: 12,
-                color: g.wajib && (dipilih[g.id]?.isEmpty ?? true) ? Colors.red : Colors.grey.shade700,
+              g.maksPilih > 0
+                  ? '${dipilih[g.id]?.length ?? 0}/${g.maksPilih}'
+                  : '${dipilih[g.id]?.length ?? 0} dipilih',
+              style: const TextStyle(fontSize: 12),
+            ),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: g.wajib ? Colors.red.shade50 : Colors.grey.shade200,
+                borderRadius: BorderRadius.circular(10),
               ),
+              child: Text(g.wajib ? 'Wajib' : 'Opsional',
+                  style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: g.wajib ? Colors.red.shade700 : Colors.grey.shade700)),
             ),
           ]),
         ),
@@ -74,10 +97,12 @@ void ketukVariasi(BuildContext context, VariasiGrup g, VariasiOpsi o, Map<int, S
   }
 }
 
-/// Nama kelompok WAJIB yang belum dipilih (kosong = lengkap).
+/// Kelompok yang belum memenuhi minimal pilihan (kosong = lengkap).
+/// Contoh isi: "Level Pedas", "Topping (min 2)".
 List<String> variasiBelumLengkap(List<VariasiGrup> grup, Map<int, Set<int>> dipilih) => [
       for (final g in grup)
-        if (g.wajib && (dipilih[g.id]?.isEmpty ?? true)) g.nama,
+        if ((dipilih[g.id]?.length ?? 0) < g.minEfektif)
+          g.minEfektif > 1 ? '${g.nama} (min ${g.minEfektif})' : g.nama,
     ];
 
 /// Pilihan terpilih dalam urutan kelompok & opsi, siap ditempel ke CartItem.variasi.

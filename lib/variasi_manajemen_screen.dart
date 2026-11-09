@@ -1,6 +1,5 @@
-// variasi_manajemen_screen.dart — kelola variasi menu (CRUD) + kategori menu.
-// Buka dari halaman Kelola:
-//   Navigator.push(context, MaterialPageRoute(builder: (_) => const VariasiManajemenScreen()));
+// variasi_manajemen_screen.dart — tab "Variasi" di Kelola: CRUD kelompok & opsi variasi,
+// aturan pilih (wajib / minimal / maksimal), harga tambahan, efek stok, dan relasi ke menu.
 import 'package:flutter/material.dart';
 
 import 'helpers.dart';
@@ -10,33 +9,7 @@ import 'variasi_models.dart';
 double? _angka(String s) => double.tryParse(s.trim().replaceAll(',', '.'));
 int? _bulat(String s) => int.tryParse(s.trim().replaceAll('.', ''));
 
-class VariasiManajemenScreen extends StatelessWidget {
-  const VariasiManajemenScreen({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Variasi menu'),
-          bottom: const TabBar(tabs: [Tab(text: 'Variasi'), Tab(text: 'Kategori menu')]),
-        ),
-        body: const TabBarView(children: [_VariasiTab(), _KategoriTab()]),
-      ),
-    );
-  }
-}
-
 // =============================================================== TAB VARIASI
-
-/// Tab "Variasi" di Kelola (dipakai manajemen_screen.dart).
-class VariasiTab extends StatelessWidget {
-  final PosRepository repo;
-  const VariasiTab({super.key, required this.repo});
-  @override
-  Widget build(BuildContext context) => const _VariasiTab();
-}
 
 class _DataVariasi {
   final List<VariasiGrup> grup;
@@ -51,14 +24,15 @@ class _BarisBahan {
   _BarisBahan({this.bahanId, String qtyAwal = ''}) : qty = TextEditingController(text: qtyAwal);
 }
 
-class _VariasiTab extends StatefulWidget {
-  const _VariasiTab();
+class VariasiTab extends StatefulWidget {
+  final PosRepository repo;
+  const VariasiTab({super.key, required this.repo});
   @override
-  State<_VariasiTab> createState() => _VariasiTabState();
+  State<VariasiTab> createState() => _VariasiTabState();
 }
 
-class _VariasiTabState extends State<_VariasiTab> {
-  final _repo = PosRepository();
+class _VariasiTabState extends State<VariasiTab> {
+  PosRepository get _repo => widget.repo;
   late Future<_DataVariasi> _f = _muat();
 
   Future<_DataVariasi> _muat() async => _DataVariasi(
@@ -100,11 +74,10 @@ class _VariasiTabState extends State<_VariasiTab> {
 
   Future<void> _formGrup({VariasiGrup? g}) async {
     final nama = TextEditingController(text: g?.nama ?? '');
-    final maks = TextEditingController(text: (g != null && g.maksPilih > 1) ? '${g.maksPilih}' : '2');
+    final minC = TextEditingController(text: g == null ? '1' : '${g.minPilih < 1 ? 1 : g.minPilih}');
+    final maksC = TextEditingController(text: g == null ? '1' : '${g.maksPilih}');
     var wajib = g?.wajib ?? false;
     var aktif = g?.aktif ?? true;
-    // 1 = pilih satu, 2 = banyak dengan batas, 0 = banyak tanpa batas
-    var mode = g == null ? 1 : (g.maksPilih == 1 ? 1 : (g.maksPilih == 0 ? 0 : 2));
 
     final ok = await showDialog<bool>(
       context: context,
@@ -112,31 +85,34 @@ class _VariasiTabState extends State<_VariasiTab> {
         builder: (ctx, setD) => AlertDialog(
           title: Text(g == null ? 'Tambah kelompok variasi' : 'Ubah kelompok variasi'),
           content: SingleChildScrollView(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
               TextField(
                   controller: nama,
                   decoration: const InputDecoration(labelText: 'Nama (Level Pedas, Topping, Suhu...)')),
-              const SizedBox(height: 8),
-              DropdownButtonFormField<int>(
-                value: mode,
-                decoration: const InputDecoration(labelText: 'Cara memilih'),
-                items: const [
-                  DropdownMenuItem(value: 1, child: Text('Pilih satu saja')),
-                  DropdownMenuItem(value: 2, child: Text('Boleh banyak (ada batas)')),
-                  DropdownMenuItem(value: 0, child: Text('Boleh banyak (tanpa batas)')),
-                ],
-                onChanged: (v) => setD(() => mode = v ?? mode),
-              ),
-              if (mode == 2)
-                TextField(
-                    controller: maks,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: 'Maksimal pilihan (min. 2)')),
               SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('Wajib dipilih'),
+                  title: const Text('Wajib diisi (Required)'),
+                  subtitle: const Text('Mati = opsional'),
                   value: wajib,
                   onChanged: (v) => setD(() => wajib = v)),
+              if (wajib)
+                TextField(
+                    controller: minC,
+                    keyboardType: TextInputType.number,
+                    onChanged: (_) => setD(() {}),
+                    decoration: const InputDecoration(labelText: 'Minimal pilihan (min_select)')),
+              TextField(
+                  controller: maksC,
+                  keyboardType: TextInputType.number,
+                  onChanged: (_) => setD(() {}),
+                  decoration: const InputDecoration(
+                      labelText: 'Maksimal pilihan (max_select)',
+                      helperText: '1 = pilih satu • 0 = tanpa batas')),
+              const SizedBox(height: 8),
+              Text(
+                'Tampil di kasir: ${aturanVariasi(wajib: wajib, min: _bulat(minC.text) ?? 1, maks: _bulat(maksC.text) ?? 1)}',
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+              ),
               SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Aktif'),
@@ -152,14 +128,16 @@ class _VariasiTabState extends State<_VariasiTab> {
       ),
     );
     final namaTxt = nama.text;
-    final batas = _bulat(maks.text) ?? 0;
+    final minimal = _bulat(minC.text) ?? 1;
+    final maksimal = _bulat(maksC.text);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       nama.dispose();
-      maks.dispose();
+      minC.dispose();
+      maksC.dispose();
     });
     if (ok != true) return;
-    if (mode == 2 && batas < 2) {
-      if (mounted) snack(context, 'Maksimal pilihan minimal 2');
+    if (maksimal == null || maksimal < 0) {
+      if (mounted) snack(context, 'Isi maksimal pilihan (0 = tanpa batas)');
       return;
     }
     await _aman(() async {
@@ -167,7 +145,8 @@ class _VariasiTabState extends State<_VariasiTab> {
         id: g?.id,
         nama: namaTxt,
         wajib: wajib,
-        maksPilih: mode == 1 ? 1 : (mode == 0 ? 0 : batas),
+        minPilih: wajib ? minimal : 0,
+        maksPilih: maksimal,
         aktif: aktif,
       );
     });
@@ -438,90 +417,6 @@ class _VariasiTabState extends State<_VariasiTab> {
           ]);
         },
       ),
-    );
-  }
-}
-
-// =============================================================== TAB KATEGORI MENU
-
-class _KategoriTab extends StatefulWidget {
-  const _KategoriTab();
-  @override
-  State<_KategoriTab> createState() => _KategoriTabState();
-}
-
-class _KategoriTabState extends State<_KategoriTab> {
-  final _repo = PosRepository();
-  late Future<List<Map<String, Object?>>> _f = _repo.daftarMenuKategori();
-
-  void _refresh() => setState(() => _f = _repo.daftarMenuKategori());
-
-  Future<void> _ubah(Map<String, Object?> m, List<String> saran) async {
-    final c = TextEditingController(text: '${m['kategori'] ?? ''}');
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setD) => AlertDialog(
-          title: Text('Kategori "${m['nama']}"'),
-          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            TextField(controller: c, decoration: const InputDecoration(labelText: 'Kategori (Seblak, Minuman...)')),
-            if (saran.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Wrap(spacing: 6, children: [
-                for (final s in saran)
-                  ActionChip(label: Text(s), onPressed: () => setD(() => c.text = s)),
-              ]),
-            ],
-          ]),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Simpan')),
-          ],
-        ),
-      ),
-    );
-    final teks = c.text;
-    WidgetsBinding.instance.addPostFrameCallback((_) => c.dispose());
-    if (ok != true) return;
-    try {
-      await _repo.setKategoriMenu(m['id'] as int, teks);
-      _refresh();
-    } catch (e) {
-      if (mounted) snack(context, 'Gagal: $e');
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<List<Map<String, Object?>>>(
-      future: _f,
-      builder: (context, snap) {
-        if (snap.hasError) return Center(child: Text('${snap.error}'));
-        if (!snap.hasData) return const Center(child: CircularProgressIndicator());
-        final menus = snap.data!;
-        final saran = menus
-            .map((m) => '${m['kategori'] ?? ''}'.trim())
-            .where((k) => k.isNotEmpty)
-            .toSet()
-            .toList()
-          ..sort();
-        return ListView(padding: const EdgeInsets.only(bottom: 24), children: [
-          const Padding(
-            padding: EdgeInsets.all(12),
-            child: Text('Kategori dipakai untuk memfilter ringkasan di Dashboard. '
-                'Menu tanpa kategori masuk "Lainnya".',
-                style: TextStyle(fontSize: 12)),
-          ),
-          for (final m in menus)
-            ListTile(
-              dense: true,
-              title: Text('${m['nama']}', style: TextStyle(color: m['aktif'] == 1 ? null : Colors.grey)),
-              subtitle: Text('${m['kategori'] ?? ''}'.trim().isEmpty ? 'Lainnya (belum diatur)' : '${m['kategori']}'),
-              trailing: const Icon(Icons.edit_outlined, size: 20),
-              onTap: () => _ubah(m, saran),
-            ),
-        ]);
-      },
     );
   }
 }
