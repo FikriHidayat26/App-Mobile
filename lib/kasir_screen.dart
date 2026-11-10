@@ -118,10 +118,11 @@ class _KasirScreenState extends State<KasirScreen> {
     final resep = awal != null
         ? awal.resep
         : (m == null ? <ResepItem>[] : await widget.repo.resepMenu(m.id!));
-    // Variasi dinamis hanya untuk menu tetap; kelompok tanpa opsi aktif diabaikan.
+    // Variasi dinamis hanya untuk menu tetap; kelompok Radio/Banyak tanpa opsi aktif diabaikan
+    // (kelompok Teks memang tidak punya opsi).
     final grupVariasi = m == null
         ? <VariasiGrup>[]
-        : (await widget.repo.grupUntukMenu(m.id!)).where((g) => g.opsi.isNotEmpty).toList();
+        : (await widget.repo.grupUntukMenu(m.id!)).where((g) => g.isTeks || g.opsi.isNotEmpty).toList();
     if (!mounted) return;
     final hasil = await Navigator.push<CartItem>(
       context,
@@ -573,8 +574,10 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
   String _kuah = kKuah[1];
   String _rasa = kRasa[0];
 
-  // Variasi dinamis: grupId -> opsiId yang dipilih.
-  final Map<int, Set<int>> _vPilih = {};
+  // Variasi dinamis: grupId -> (opsiId -> jumlah).
+  final Map<int, Map<int, int>> _vPilih = {};
+  // Variasi bertipe Teks: grupId -> isian.
+  final Map<int, String> _vTeks = {};
   // Bila menu punya variasi, Level/Kuah/Rasa/Topping lama disembunyikan
   // (digantikan kelompok variasi yang diatur di Kelola > Variasi).
   bool get _pakaiVariasi => widget.grupVariasi.isNotEmpty;
@@ -605,7 +608,12 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
       _rasa = kRasa.contains(a.rasa) ? a.rasa : kRasa[0];
       _catatanCtl.text = a.catatan;
       for (final v in a.variasi) {
-        (_vPilih[v.grupId] ??= <int>{}).add(v.opsiId);
+        if (v.teks) {
+          _vTeks[v.grupId] = v.opsiNama;
+          continue;
+        }
+        final m = _vPilih[v.grupId] ??= <int, int>{};
+        m[v.opsiId] = (m[v.opsiId] ?? 0) + 1;
       }
     }
   }
@@ -632,7 +640,7 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
         rasa: _rasa,
         catatan: _catatanCtl.text,
         qty: _qty,
-        variasi: susunPilihanVariasi(widget.grupVariasi, _vPilih),
+        variasi: susunPilihanVariasi(widget.grupVariasi, _vPilih, _vTeks),
         tampilkanLegacy: _legacy,
       );
 
@@ -650,6 +658,18 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
     return out;
   }
 
+  /// Teks sisa stok di baris opsi, mis. "sisa 46 pcs" (null bila opsi tidak memotong bahan).
+  String? _infoStok(VariasiOpsi o) {
+    if (o.bahan.isEmpty) return null;
+    final bagian = o.bahan.map((b) {
+      final s = widget.sisaStok(b.bahanId);
+      final bh = widget.semuaBahan[b.bahanId];
+      final t = '${fmtQty(s < 0 ? 0 : s)} ${bh?.satuanDasar ?? b.satuan}';
+      return o.bahan.length == 1 ? t : '${bh?.nama ?? b.nama} $t';
+    }).join(', ');
+    return 'sisa $bagian';
+  }
+
   bool _bolehTambah(Bahan b, CartItem c) {
     final sisa = widget.sisaStok(b.id!);
     final dipakai = (c.kebutuhanPerPorsi[b.id!] ?? 0) * c.qty;
@@ -661,7 +681,7 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
     final c = _susun();
     final kurang = _kurang(c);
     final kosongPrasmanan = _prasmanan && c.topping.isEmpty;
-    final variasiBelum = variasiBelumLengkap(widget.grupVariasi, _vPilih);
+    final variasiBelum = variasiBelumLengkap(widget.grupVariasi, _vPilih, _vTeks);
 
     return Scaffold(
       appBar: AppBar(title: Text(_prasmanan ? 'Seblak Prasmanan' : widget.menu!.nama)),
@@ -691,8 +711,15 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
           VariasiPilihan(
             grup: widget.grupVariasi,
             dipilih: _vPilih,
-            onKetuk: (g, o) {
-              ketukVariasi(context, g, o, _vPilih);
+            teks: _vTeks,
+            infoStok: _infoStok,
+            onTeks: (g, v) => setState(() => _vTeks[g.id] = v),
+            onTambah: (g, o) {
+              tambahVariasi(context, g, o, _vPilih);
+              setState(() {});
+            },
+            onKurang: (g, o) {
+              kurangVariasi(g, o, _vPilih);
               setState(() {});
             },
           ),

@@ -222,11 +222,14 @@ class CartItem {
       out.add('${prasmanan ? 'Pilihan' : 'Tambah'}: ${tops.map((t) => '${t.bahan.nama} x${t.pick}').join(', ')}');
     }
     if (variasi.isNotEmpty) {
-      final perGrup = <String, List<String>>{};
+      // Opsi yang sama dipilih berkali-kali ditulis "Sosis x2".
+      final perGrup = <String, Map<String, int>>{};
       for (final v in variasi) {
-        (perGrup[v.grupNama] ??= <String>[]).add(v.opsiNama);
+        final m = perGrup[v.grupNama] ??= <String, int>{};
+        m[v.opsiNama] = (m[v.opsiNama] ?? 0) + 1;
       }
-      perGrup.forEach((g, o) => out.add('$g: ${o.join(', ')}'));
+      perGrup.forEach((g, o) => out.add(
+          '$g: ${o.entries.map((e) => e.value > 1 ? '${e.key} x${e.value}' : e.key).join(', ')}'));
     }
     if (tampilkanLegacy) {
       out.add('Pedas: $levelLabel');

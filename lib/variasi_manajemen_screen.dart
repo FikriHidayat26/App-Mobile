@@ -78,6 +78,7 @@ class _VariasiTabState extends State<VariasiTab> {
     final maksC = TextEditingController(text: g == null ? '1' : '${g.maksPilih}');
     var wajib = g?.wajib ?? false;
     var aktif = g?.aktif ?? true;
+    var tipe = g?.tipe ?? kVarRadio;
 
     final ok = await showDialog<bool>(
       context: context,
@@ -89,28 +90,50 @@ class _VariasiTabState extends State<VariasiTab> {
               TextField(
                   controller: nama,
                   decoration: const InputDecoration(labelText: 'Nama (Level Pedas, Topping, Suhu...)')),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                value: tipe,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Tipe tampilan di kasir'),
+                items: const [
+                  DropdownMenuItem(value: kVarRadio, child: Text('Radio (pilih satu)')),
+                  DropdownMenuItem(value: kVarTeks, child: Text('Teks (ketik bebas)')),
+                  DropdownMenuItem(value: kVarBanyak, child: Text('Banyak item (tombol − / +)')),
+                ],
+                onChanged: (v) => setD(() {
+                  tipe = v ?? kVarRadio;
+                  // Banyak item: default tanpa batas bila sebelumnya "pilih satu".
+                  if (tipe == kVarBanyak && (_bulat(maksC.text) ?? 1) == 1) maksC.text = '0';
+                }),
+              ),
               SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Wajib diisi (Required)'),
                   subtitle: const Text('Mati = opsional'),
                   value: wajib,
                   onChanged: (v) => setD(() => wajib = v)),
-              if (wajib)
+              if (wajib && tipe == kVarBanyak)
                 TextField(
                     controller: minC,
                     keyboardType: TextInputType.number,
                     onChanged: (_) => setD(() {}),
                     decoration: const InputDecoration(labelText: 'Minimal pilihan (min_select)')),
-              TextField(
-                  controller: maksC,
-                  keyboardType: TextInputType.number,
-                  onChanged: (_) => setD(() {}),
-                  decoration: const InputDecoration(
-                      labelText: 'Maksimal pilihan (max_select)',
-                      helperText: '1 = pilih satu • 0 = tanpa batas')),
+              if (tipe == kVarBanyak)
+                TextField(
+                    controller: maksC,
+                    keyboardType: TextInputType.number,
+                    onChanged: (_) => setD(() {}),
+                    decoration: const InputDecoration(
+                        labelText: 'Maksimal total item (max_select)',
+                        helperText:
+                            'Jumlah semua opsi digabung, mis. 5 = boleh sosis×2 + tofu×3 • 0 = tanpa batas')),
               const SizedBox(height: 8),
               Text(
-                'Tampil di kasir: ${aturanVariasi(wajib: wajib, min: _bulat(minC.text) ?? 1, maks: _bulat(maksC.text) ?? 1)}',
+                tipe == kVarTeks
+                    ? 'Tampil di kasir: kolom teks (${wajib ? 'wajib diisi' : 'boleh kosong'})'
+                    : tipe == kVarRadio
+                        ? 'Tampil di kasir: ${aturanVariasi(wajib: wajib, min: 1, maks: 1)}'
+                        : 'Tampil di kasir: ${aturanVariasi(wajib: wajib, min: _bulat(minC.text) ?? 1, maks: _bulat(maksC.text) ?? 0)}',
                 style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
               ),
               SwitchListTile(
@@ -136,8 +159,8 @@ class _VariasiTabState extends State<VariasiTab> {
       maksC.dispose();
     });
     if (ok != true) return;
-    if (maksimal == null || maksimal < 0) {
-      if (mounted) snack(context, 'Isi maksimal pilihan (0 = tanpa batas)');
+    if (tipe == kVarBanyak && (maksimal == null || maksimal < 0)) {
+      if (mounted) snack(context, 'Isi maksimal item (0 = tanpa batas)');
       return;
     }
     await _aman(() async {
@@ -145,9 +168,10 @@ class _VariasiTabState extends State<VariasiTab> {
         id: g?.id,
         nama: namaTxt,
         wajib: wajib,
-        minPilih: wajib ? minimal : 0,
-        maksPilih: maksimal,
+        minPilih: wajib ? (tipe == kVarBanyak ? minimal : 1) : 0,
+        maksPilih: maksimal ?? 1,
         aktif: aktif,
+        tipe: tipe,
       );
     });
   }
@@ -276,6 +300,12 @@ class _VariasiTabState extends State<VariasiTab> {
   Future<void> _aturMenu(VariasiGrup g, List<Map<String, Object?>> menus) async {
     final dipilih = g.menuIds.toSet();
     final daftar = menus.where((m) => m['aktif'] == 1 || dipilih.contains(m['id'] as int)).toList();
+    String katDari(Map<String, Object?> m) => (m['kategori'] as String?) ?? 'Tanpa kategori';
+    final kategoriList = {for (final m in daftar) katDari(m)}.toList()..sort();
+    List<int> idsKategori(String k) => [
+          for (final m in daftar)
+            if (katDari(m) == k) m['id'] as int,
+        ];
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -290,6 +320,23 @@ class _VariasiTabState extends State<VariasiTab> {
                     child: const Text('Pilih semua')),
                 TextButton(onPressed: () => setD(dipilih.clear), child: const Text('Kosongkan')),
               ]),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Wrap(spacing: 6, runSpacing: 0, children: [
+                  for (final k in kategoriList)
+                    FilterChip(
+                      label: Text('Semua $k'),
+                      selected: idsKategori(k).every(dipilih.contains),
+                      onSelected: (v) => setD(() {
+                        if (v) {
+                          dipilih.addAll(idsKategori(k));
+                        } else {
+                          dipilih.removeAll(idsKategori(k));
+                        }
+                      }),
+                    ),
+                ]),
+              ),
               for (final m in daftar)
                 CheckboxListTile(
                   dense: true,
@@ -364,7 +411,9 @@ class _VariasiTabState extends State<VariasiTab> {
                 child: ExpansionTile(
                   title: Text(g.nama,
                       style: TextStyle(fontWeight: FontWeight.bold, color: g.aktif ? null : Colors.grey)),
-                  subtitle: Text('${g.keterangan} • ${g.opsi.length} opsi • ${g.menuIds.length} menu'),
+                  subtitle: Text(g.isTeks
+                      ? '${g.keterangan} • ${g.menuIds.length} menu'
+                      : '${g.keterangan} • ${g.opsi.length} opsi • ${g.menuIds.length} menu'),
                   children: [
                     for (final o in g.opsi)
                       ListTile(
@@ -387,10 +436,11 @@ class _VariasiTabState extends State<VariasiTab> {
                     Padding(
                       padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
                       child: Wrap(spacing: 4, children: [
-                        TextButton.icon(
-                            onPressed: () => _formOpsi(g, d.bahan),
-                            icon: const Icon(Icons.add),
-                            label: const Text('Opsi')),
+                        if (!g.isTeks)
+                          TextButton.icon(
+                              onPressed: () => _formOpsi(g, d.bahan),
+                              icon: const Icon(Icons.add),
+                              label: const Text('Opsi')),
                         TextButton.icon(
                             onPressed: () => _aturMenu(g, d.menus),
                             icon: const Icon(Icons.link),

@@ -442,23 +442,39 @@ class PosRepository {
           }
         } else {
           final grupRows = await tx.rawQuery('''
-            SELECT g.id, g.nama, g.wajib, g.min_pilih, g.maks_pilih
+            SELECT g.id, g.nama, g.wajib, g.min_pilih, g.maks_pilih, g.tipe
             FROM variasi_grup g JOIN menu_variasi_grup mg ON mg.grup_id = g.id
             WHERE mg.menu_id = ? AND g.aktif = 1''', [c.menu!.id]);
           final grupById = {for (final g in grupRows) g['id'] as int: g};
-          final perGrup = <int, Set<int>>{};
+          // Satu opsi boleh dipilih berkali-kali (stepper di kasir):
+          // jumlah dihitung per kelompok (total) dan per opsi.
+          final perGrup = <int, int>{};
+          final jmlOpsi = <int, int>{};
+          final contoh = <int, PilihanVariasi>{};
+          final teksList = <PilihanVariasi>[]; // jawaban kelompok bertipe Teks (opsiId = 0)
           for (final pv in c.variasi) {
-            if (!grupById.containsKey(pv.grupId)) {
+            final gr = grupById[pv.grupId];
+            if (gr == null) {
               throw PosException('Variasi "${pv.grupNama}" tidak berlaku untuk ${h.nama}');
             }
-            final himpunan = perGrup.putIfAbsent(pv.grupId, () => <int>{});
-            if (!himpunan.add(pv.opsiId)) {
-              throw PosException('Opsi "${pv.opsiNama}" terpilih dua kali');
+            final tipeGrup = (gr['tipe'] as String?) ?? 'RADIO';
+            if (pv.opsiId == 0) {
+              if (tipeGrup != 'TEKS') throw PosException('"${pv.grupNama}" bukan isian teks');
+              final t = pv.opsiNama.trim();
+              if (t.isEmpty) continue;
+              if (t.length > 100) throw PosException('Isian "${pv.grupNama}" maksimal 100 karakter');
+              teksList.add(pv);
+              perGrup[pv.grupId] = (perGrup[pv.grupId] ?? 0) + 1;
+            } else {
+              if (tipeGrup == 'TEKS') throw PosException('"${pv.grupNama}" hanya berupa isian teks');
+              perGrup[pv.grupId] = (perGrup[pv.grupId] ?? 0) + 1;
+              jmlOpsi[pv.opsiId] = (jmlOpsi[pv.opsiId] ?? 0) + 1;
+              contoh.putIfAbsent(pv.opsiId, () => pv);
             }
           }
           for (final g in grupRows) {
             final gid = g['id'] as int;
-            final jumlah = perGrup[gid]?.length ?? 0;
+            final jumlah = perGrup[gid] ?? 0;
             final maks = g['maks_pilih'] as int; // 0 = tanpa batas
             final minDb = (g['min_pilih'] as int?) ?? 0;
             final minimal = (g['wajib'] as int) == 1 ? (minDb < 1 ? 1 : minDb) : 0;
@@ -472,7 +488,8 @@ class PosRepository {
             }
           }
           // Harga & bahan SELALU dibaca dari database, bukan dari keranjang.
-          for (final pv in c.variasi) {
+          for (final pv in contoh.values) {
+            final n = jmlOpsi[pv.opsiId]!;
             final o = await tx.query('variasi_opsi',
                 where: 'id = ? AND grup_id = ? AND aktif = 1', whereArgs: [pv.opsiId, pv.grupId]);
             if (o.isEmpty) throw PosException('Opsi "${pv.opsiNama}" tidak tersedia lagi');
@@ -486,12 +503,19 @@ class PosRepository {
               final bid = ob['bahan_id'] as int;
               final br = await bahanRow(bid);
               final q = (ob['qty_dasar'] as num).toDouble();
-              perPorsi[bid] = (perPorsi[bid] ?? 0) + q;
+              perPorsi[bid] = (perPorsi[bid] ?? 0) + q * n;
               hppOpsi += q * (br['hpp_per_dasar'] as num).toDouble();
             }
-            harga += tambah;
-            hpp += hppOpsi;
-            h.variasi.add(_BarisVariasi(pv.grupId, pv.opsiId, namaGrup, namaOpsi, tambah, hppOpsi));
+            harga += tambah * n;
+            hpp += hppOpsi * n;
+            // harga & hpp disimpan TOTAL untuk n item (sama seperti topping); jumlah = n.
+            h.variasi.add(_BarisVariasi(
+                pv.grupId, pv.opsiId, namaGrup, namaOpsi, tambah * n, hppOpsi * n, n));
+          }
+          // Jawaban teks: tanpa harga & tanpa efek stok.
+          for (final pv in teksList) {
+            h.variasi.add(_BarisVariasi(
+                pv.grupId, 0, grupById[pv.grupId]!['nama'] as String, pv.opsiNama.trim(), 0, 0.0, 1));
           }
         }
 
@@ -568,9 +592,10 @@ class PosRepository {
           await tx.insert('transaksi_item_variasi', {
             'item_id': itemId,
             'grup_id': v.grupId,
-            'opsi_id': v.opsiId,
+            'opsi_id': v.opsiId == 0 ? null : v.opsiId, // null = jawaban teks
             'grup_nama': v.grupNama,
             'opsi_nama': v.opsiNama,
+            'jumlah': v.jumlah,
             'harga': v.harga,
             'hpp': v.hpp,
           });
@@ -639,8 +664,8 @@ class PosRepository {
           ...tops.map((x) => StrukTopping(x['nama'] as String, x['jenis'] as String,
               x['jumlah_pick'] as int, (x['harga'] as num).toInt())),
           // Variasi tampil sebagai baris tambahan: "Level Pedas: Level 3"
-          ...vars.map((x) => StrukTopping('${x['grup_nama']}: ${x['opsi_nama']}', 'VARIASI', 1,
-              (x['harga'] as num).toInt())),
+          ...vars.map((x) => StrukTopping('${x['grup_nama']}: ${x['opsi_nama']}', 'VARIASI',
+              (x['jumlah'] as int?) ?? 1, (x['harga'] as num).toInt())),
         ],
       ));
     }
@@ -1101,15 +1126,26 @@ class PosRepository {
           opsi_id   INTEGER,
           grup_nama TEXT NOT NULL,
           opsi_nama TEXT NOT NULL,
+          jumlah    INTEGER NOT NULL DEFAULT 1,
           harga     INTEGER NOT NULL DEFAULT 0,
           hpp       REAL NOT NULL DEFAULT 0
         )''');
+      // DB lama: tambah kolom jumlah (baris lama otomatis bernilai 1; data tidak berubah).
+      final kolomTiv = await tx.rawQuery('PRAGMA table_info(transaksi_item_variasi)');
+      if (!kolomTiv.any((c) => c['name'] == 'jumlah')) {
+        await tx.execute('ALTER TABLE transaksi_item_variasi ADD COLUMN jumlah INTEGER NOT NULL DEFAULT 1');
+      }
       // Aturan pilihan: wajib (is_required), min_pilih (min_select), maks_pilih (max_select).
       final kolomGrup = await tx.rawQuery('PRAGMA table_info(variasi_grup)');
       if (!kolomGrup.any((c) => c['name'] == 'min_pilih')) {
         await tx.execute('ALTER TABLE variasi_grup ADD COLUMN min_pilih INTEGER NOT NULL DEFAULT 0');
       }
       await tx.execute('UPDATE variasi_grup SET min_pilih = 1 WHERE wajib = 1 AND min_pilih < 1');
+      // Tipe kelompok: RADIO | TEKS | BANYAK. Kelompok lama: maks 1 -> RADIO, selain itu -> BANYAK.
+      if (!kolomGrup.any((c) => c['name'] == 'tipe')) {
+        await tx.execute("ALTER TABLE variasi_grup ADD COLUMN tipe TEXT NOT NULL DEFAULT 'RADIO'");
+        await tx.execute("UPDATE variasi_grup SET tipe = 'BANYAK' WHERE maks_pilih <> 1");
+      }
       await tx.execute(
           'CREATE INDEX IF NOT EXISTS idx_variasi_opsi_grup ON variasi_opsi(grup_id)');
       await tx.execute(
@@ -1170,6 +1206,7 @@ class PosRepository {
         aktif: (g['aktif'] as int) == 1,
         opsi: opsi,
         menuIds: menuRows.map((m) => m['menu_id'] as int).toList(),
+        tipe: (g['tipe'] as String?) ?? ((g['maks_pilih'] as int) == 1 ? 'RADIO' : 'BANYAK'),
       ));
     }
     return out;
@@ -1187,11 +1224,16 @@ class PosRepository {
     required String nama,
     bool wajib = false,
     int minPilih = 0, // hanya berlaku bila wajib; wajib => minimal 1
-    int maksPilih = 1, // 1 = pilih satu, >1 = batas, 0 = tanpa batas
+    int maksPilih = 1, // tipe BANYAK: batas total (0 = tanpa batas); tipe lain selalu 1
     bool aktif = true,
+    String tipe = 'RADIO', // RADIO | TEKS | BANYAK
   }) async {
     final n = nama.trim();
     if (n.isEmpty) throw PosException('Nama kelompok variasi wajib diisi');
+    if (tipe != 'RADIO' && tipe != 'TEKS' && tipe != 'BANYAK') {
+      throw PosException('Tipe variasi tidak valid');
+    }
+    if (tipe != 'BANYAK') maksPilih = 1;
     if (maksPilih < 0) throw PosException('Batas pilihan tidak valid');
     var minimal = wajib ? (minPilih < 1 ? 1 : minPilih) : 0;
     if (maksPilih == 1 && minimal > 1) minimal = 1;
@@ -1208,6 +1250,7 @@ class PosRepository {
       'min_pilih': minimal,
       'maks_pilih': maksPilih,
       'aktif': aktif ? 1 : 0,
+      'tipe': tipe,
     };
     if (id == null) return d.insert('variasi_grup', data);
     await d.update('variasi_grup', data, where: 'id = ?', whereArgs: [id]);
@@ -1304,8 +1347,13 @@ class PosRepository {
             where: 'nama = ? COLLATE NOCASE', whereArgs: [nama]);
         if (r.isNotEmpty) return r.first['id'] as int;
         dibuat++;
-        return tx.insert('variasi_grup',
-            {'nama': nama, 'wajib': 0, 'maks_pilih': maks, 'aktif': 1});
+        return tx.insert('variasi_grup', {
+          'nama': nama,
+          'wajib': 0,
+          'maks_pilih': maks,
+          'aktif': 1,
+          'tipe': maks == 1 ? 'RADIO' : 'BANYAK',
+        });
       }
 
       Future<void> opsi(int gid, String nama,
@@ -1577,12 +1625,12 @@ class PosRepository {
     final f = _filterRingkas(dari, sampai, menuId, kategori);
     return d.rawQuery('''
       SELECT v.grup_nama AS grup, v.opsi_nama AS opsi,
-             SUM(ti.qty) AS qty, SUM(ti.qty * v.harga) AS omzet
+             SUM(ti.qty * v.jumlah) AS qty, SUM(ti.qty * v.harga) AS omzet
       FROM transaksi t
       JOIN transaksi_item ti ON ti.transaksi_id = t.id
       JOIN transaksi_item_variasi v ON v.item_id = ti.id
       LEFT JOIN menu m ON m.id = ti.menu_id
-      WHERE ${f.where}
+      WHERE ${f.where} AND v.opsi_id IS NOT NULL
       GROUP BY v.grup_nama, v.opsi_nama
       ORDER BY qty DESC LIMIT 10''', f.args);
   }
@@ -1606,7 +1654,9 @@ class _BarisVariasi {
   final String opsiNama;
   final int harga;
   final double hpp;
-  _BarisVariasi(this.grupId, this.opsiId, this.grupNama, this.opsiNama, this.harga, this.hpp);
+  final int jumlah;
+  _BarisVariasi(this.grupId, this.opsiId, this.grupNama, this.opsiNama, this.harga, this.hpp,
+      [this.jumlah = 1]);
 }
 
 class _Hitung {

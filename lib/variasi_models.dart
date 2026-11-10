@@ -3,6 +3,17 @@
 // Opsi             : pilihan di dalam kelompok, punya harga tambahan + efek stok bahan.
 // Relasi           : satu kelompok bisa dipasang ke banyak menu (menuIds).
 
+/// Tipe kelompok variasi (dipilih di Kelola > Variasi).
+const String kVarRadio = 'RADIO'; // pilih satu opsi
+const String kVarTeks = 'TEKS'; // isian teks bebas
+const String kVarBanyak = 'BANYAK'; // banyak item, tiap opsi punya tombol - / +
+
+String labelTipeVariasi(String t) {
+  if (t == kVarTeks) return 'Teks';
+  if (t == kVarBanyak) return 'Banyak item';
+  return 'Radio';
+}
+
 /// Bahan yang ikut terpotong stoknya bila opsi dipilih (per 1 porsi).
 class VariasiBahan {
   final int bahanId;
@@ -59,6 +70,9 @@ class VariasiGrup {
   final bool aktif;
   final List<VariasiOpsi> opsi;
   final List<int> menuIds;
+
+  /// RADIO | TEKS | BANYAK (lihat konstanta kVar...).
+  final String tipe;
   const VariasiGrup({
     required this.id,
     required this.nama,
@@ -68,9 +82,12 @@ class VariasiGrup {
     required this.aktif,
     this.opsi = const [],
     this.menuIds = const [],
+    this.tipe = kVarRadio,
   });
 
-  bool get pilihSatu => maksPilih == 1;
+  bool get pilihSatu => tipe == kVarRadio;
+  bool get isTeks => tipe == kVarTeks;
+  bool get isBanyak => tipe == kVarBanyak;
 
   /// Minimal yang benar-benar harus dipilih (tidak melebihi jumlah opsi aktif).
   int get minEfektif {
@@ -81,7 +98,9 @@ class VariasiGrup {
 
   String get aturan => aturanVariasi(wajib: wajib, min: minPilih, maks: maksPilih);
 
-  String get keterangan => '${wajib ? 'Wajib' : 'Opsional'} • $aturan';
+  String get keterangan => isTeks
+      ? '${labelTipeVariasi(tipe)} • ${wajib ? 'Wajib diisi' : 'Opsional'}'
+      : '${labelTipeVariasi(tipe)} • ${wajib ? 'Wajib' : 'Opsional'} • $aturan';
 }
 
 /// Pilihan variasi yang menempel pada satu item keranjang.
@@ -96,6 +115,10 @@ class PilihanVariasi {
 
   /// Bahan yang terpotong per porsi (untuk cek stok di kasir; hitungan final di repository).
   final List<VariasiBahan> bahan;
+
+  /// Jawaban kelompok bertipe Teks disimpan sebagai PilihanVariasi dengan opsiId = 0
+  /// dan opsiNama = teks yang diketik.
+  bool get teks => opsiId == 0;
   const PilihanVariasi({
     required this.grupId,
     required this.opsiId,
