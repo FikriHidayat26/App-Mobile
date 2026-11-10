@@ -10,6 +10,7 @@ import 'models.dart';
 import 'pos_repository.dart';
 import 'printer_screen.dart';
 import 'variasi_manajemen_screen.dart';
+import 'variasi_models.dart';
 
 double? _angka(String s) => double.tryParse(s.trim().replaceAll(',', '.'));
 int? _bulat(String s) => int.tryParse(s.trim().replaceAll('.', ''));
@@ -74,51 +75,44 @@ class _MenuTabState extends State<MenuTab> {
   void _refresh() => setState(() => _f = widget.repo.daftarMenuLengkap());
 
   Future<void> _dialogMenu({Map<String, Object?>? sumber}) async {
+    final kats = [for (final k in await widget.repo.daftarKategori()) k['nama'] as String];
+    if (!mounted) return;
     final nama = TextEditingController(text: sumber == null ? '' : '${sumber['nama']} (salinan)');
     final harga = TextEditingController(text: sumber == null ? '' : '${n(sumber['harga_jual']).toInt()}');
-    final kategori = await widget.repo.daftarKategori();
-    int? kategoriId = sumber?['kategori_id'] as int?;
-    if (!mounted) return;
+    String? kategori = sumber == null ? null : '${sumber['kategori'] ?? ''}'.trim();
+    if (kategori != null && kategori.isEmpty) kategori = null;
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setD) => AlertDialog(
-          title: Text(sumber == null ? 'Tambah menu' : 'Duplikat menu'),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
+      builder: (ctx) => AlertDialog(
+        title: Text(sumber == null ? 'Tambah menu' : 'Duplikat menu'),
+        content: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
             TextField(controller: nama, decoration: const InputDecoration(labelText: 'Nama menu')),
             TextField(
                 controller: harga,
                 keyboardType: TextInputType.number,
                 decoration: const InputDecoration(labelText: 'Harga jual (Rp)')),
-            const SizedBox(height: 8),
-            DropdownButtonFormField<int?>(
-              value: kategoriId,
-              isExpanded: true,
-              decoration: const InputDecoration(labelText: 'Kategori'),
-              items: [
-                const DropdownMenuItem<int?>(value: null, child: Text('Tanpa kategori')),
-                for (final k in kategori)
-                  DropdownMenuItem<int?>(value: k['id'] as int, child: Text('${k['nama']}')),
-              ],
-              onChanged: (v) => setD(() => kategoriId = v),
-            ),
+            const SizedBox(height: 4),
+            KategoriPicker(daftar: kats, awal: kategori, onChanged: (v) => kategori = v),
           ]),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Simpan')),
-          ],
         ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Simpan')),
+        ],
       ),
     );
     final namaTxt = nama.text;
     final hargaVal = _bulat(harga.text) ?? 0;
-    nama.dispose();
-    harga.dispose();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      nama.dispose();
+      harga.dispose();
+    });
     if (ok != true) return;
     try {
       final id = sumber == null
-          ? await widget.repo.tambahMenu(namaTxt, hargaVal, kategoriId: kategoriId)
-          : await widget.repo.duplikatMenu(sumber['id'] as int, namaTxt, hargaVal, kategoriId: kategoriId);
+          ? await widget.repo.tambahMenu(namaTxt, hargaVal, kategori: kategori)
+          : await widget.repo.duplikatMenu(sumber['id'] as int, namaTxt, hargaVal, kategori: kategori);
       if (!mounted) return;
       _refresh();
       await Navigator.push(context,
@@ -129,41 +123,59 @@ class _MenuTabState extends State<MenuTab> {
     }
   }
 
-  Future<void> _ubahKategori(Map<String, Object?> m) async {
-    final kategori = await widget.repo.daftarKategori();
-    if (!mounted) return;
-    if (kategori.isEmpty) {
-      snack(context, 'Buat kategori dulu di tab Kategori');
-      return;
+  /// Hapus permanen setelah konfirmasi. Fitur Nonaktif (saklar) tetap ada & tidak berubah.
+  Future<void> _hapusMenu(Map<String, Object?> m) async {
+    final yakin = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Hapus menu "${m['nama']}"?'),
+        content: const Text('Menu beserta resep dan pemasangan variasinya akan dihapus permanen. '
+            'Riwayat penjualan tetap tersimpan.\n\n'
+            'Untuk sekadar menyembunyikan dari kasir, gunakan saklar Nonaktif.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Hapus'),
+          ),
+        ],
+      ),
+    );
+    if (yakin != true) return;
+    try {
+      await widget.repo.hapusMenu(m['id'] as int);
+      if (mounted) snack(context, 'Menu "${m['nama']}" dihapus');
+      _refresh();
+    } on PosException catch (e) {
+      if (mounted) snack(context, e.pesan);
     }
-    int? pilih = m['kategori_id'] as int?;
+  }
+
+  Future<void> _ubahKategori(Map<String, Object?> m, List<Map<String, Object?>> semua) async {
+    final kats = [for (final k in await widget.repo.daftarKategori()) k['nama'] as String];
+    if (!mounted) return;
+    String? kategori = '${m['kategori'] ?? ''}'.trim();
+    if (kategori!.isEmpty) kategori = null;
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setD) => AlertDialog(
-          title: Text('Kategori "${m['nama']}"'),
-          content: DropdownButtonFormField<int?>(
-            value: pilih,
-            isExpanded: true,
-            decoration: const InputDecoration(labelText: 'Kategori'),
-            items: [
-              const DropdownMenuItem<int?>(value: null, child: Text('Tanpa kategori')),
-              for (final k in kategori)
-                DropdownMenuItem<int?>(value: k['id'] as int, child: Text('${k['nama']}')),
-            ],
-            onChanged: (v) => setD(() => pilih = v),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Simpan')),
-          ],
+      builder: (ctx) => AlertDialog(
+        title: Text('Kategori "${m['nama']}"'),
+        content: SingleChildScrollView(
+          child: KategoriPicker(daftar: kats, awal: kategori, onChanged: (v) => kategori = v),
         ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Batal')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Simpan')),
+        ],
       ),
     );
     if (ok != true) return;
     try {
-      await widget.repo.setKategoriMenu(m['id'] as int, pilih);
+      await widget.repo.setKategoriMenu(m['id'] as int, kategori);
       _refresh();
+    } on PosException catch (e) {
+      if (mounted) snack(context, e.pesan);
     } catch (e) {
       if (mounted) snack(context, 'Gagal: $e');
     }
@@ -203,11 +215,16 @@ class _MenuTabState extends State<MenuTab> {
                 IconButton(
                     tooltip: 'Kategori',
                     icon: const Icon(Icons.label_outline),
-                    onPressed: () => _ubahKategori(m)),
+                    onPressed: () => _ubahKategori(m, data)),
                 IconButton(
                     tooltip: 'Duplikat',
                     icon: const Icon(Icons.copy),
                     onPressed: () => _dialogMenu(sumber: m)),
+                IconButton(
+                    tooltip: 'Hapus menu',
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.delete_outline, color: Colors.red),
+                    onPressed: () => _hapusMenu(m)),
                 Switch(
                   value: aktif,
                   onChanged: (v) async {
@@ -244,8 +261,9 @@ class _ResepEditorScreenState extends State<ResepEditorScreen> {
     final resep = await widget.repo.resepDetail(widget.menuId);
     final bahan = await widget.repo.daftarBahan();
     final oh = await widget.repo.overheadPerPorsi();
+    final grup = await widget.repo.daftarGrupVariasi();
     _harga.text = '${n(menu?['harga_jual']).toInt()}';
-    return [menu, resep, bahan, oh];
+    return [menu, resep, bahan, oh, grup];
   }
 
   void _refresh() => setState(() => _f = _muat());
@@ -278,6 +296,7 @@ class _ResepEditorScreenState extends State<ResepEditorScreen> {
         final resep = snap.data![1] as List<Map<String, Object?>>;
         final bahan = snap.data![2] as List<Bahan>;
         final oh = snap.data![3] as double;
+        final grup = snap.data![4] as List<VariasiGrup>;
         final hpp = resep.fold<double>(0, (a, r) => a + n(r['biaya']));
         final harga = _bulat(_harga.text) ?? 0;
 
@@ -340,6 +359,44 @@ class _ResepEditorScreenState extends State<ResepEditorScreen> {
                 ]),
               );
             }),
+            const Divider(height: 28),
+            const Text('Variasi & ekstra topping untuk menu ini',
+                style: TextStyle(fontWeight: FontWeight.bold)),
+            const Padding(
+              padding: EdgeInsets.only(top: 2, bottom: 4),
+              child: Text(
+                  'Centang kelompok yang berlaku (Level Pedas, Ekstra Topping, Suhu...). '
+                  'Aturan wajib / maksimal pilihan diatur di tab Variasi.',
+                  style: TextStyle(fontSize: 12)),
+            ),
+            if (grup.isEmpty)
+              const Text('Belum ada kelompok variasi. Buat di tab Variasi.',
+                  style: TextStyle(color: Colors.grey)),
+            for (final g in grup)
+              CheckboxListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                title: Text(g.nama, style: TextStyle(color: g.aktif ? null : Colors.grey)),
+                subtitle: Text('${g.keterangan} • ${g.opsi.length} opsi'),
+                value: g.menuIds.contains(widget.menuId),
+                onChanged: (v) async {
+                  final terpasang = <int>{
+                    for (final x in grup)
+                      if (x.menuIds.contains(widget.menuId)) x.id,
+                  };
+                  if (v == true) {
+                    terpasang.add(g.id);
+                  } else {
+                    terpasang.remove(g.id);
+                  }
+                  await _aman(() => widget.repo.setGrupUntukMenu(widget.menuId, [
+                        for (final x in grup)
+                          if (terpasang.contains(x.id)) x.id,
+                      ]));
+                  _refresh();
+                },
+              ),
             const Divider(height: 28),
             const Text('Tambah bahan ke resep', style: TextStyle(fontWeight: FontWeight.bold)),
             DropdownButtonFormField<int>(

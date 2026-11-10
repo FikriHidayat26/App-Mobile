@@ -11,10 +11,6 @@ import 'printer_service.dart';
 import 'variasi_models.dart';
 import 'variasi_picker.dart';
 
-// Penanda khusus untuk kartu kategori di layar kasir.
-const int _kSemua = -1; // "Semua menu"
-const int _kTanpa = -2; // menu tanpa kategori
-
 class KasirScreen extends StatefulWidget {
   final PosRepository repo;
   const KasirScreen({super.key, required this.repo});
@@ -24,14 +20,15 @@ class KasirScreen extends StatefulWidget {
 
 class _KasirScreenState extends State<KasirScreen> {
   List<Menu> _menus = [];
-  List<Map<String, Object?>> _kategori = [];
-  int? _katId; // null = tampilan grid kategori; selain itu = isi kategori terpilih
-  String _katNama = '';
   List<Bahan> _bahan = [];
   int _biayaDasar = 0;
   bool _loading = true;
   String? _error;
-  int _mode = 0; // 0 = menu, 1 = prasmanan
+  List<Map<String, Object?>> _kategori = [];
+  static const String _semua = '__semua__';
+  static const String _prasmanan = '__prasmanan__';
+  static const String _lainnya = 'Lainnya';
+  String _pilih = ''; // '' = tampilan daftar kategori (halaman awal kasir)
   final List<CartItem> _cart = [];
 
   @override
@@ -43,17 +40,15 @@ class _KasirScreenState extends State<KasirScreen> {
   Future<void> _muat() async {
     try {
       final menus = await widget.repo.daftarMenu();
-      final kategori = await widget.repo.daftarKategori();
       final bahan = await widget.repo.daftarBahan();
       final biaya = await widget.repo.biayaDasarPrasmanan();
+      final kategori = await widget.repo.daftarKategori();
       if (!mounted) return;
       setState(() {
         _menus = menus;
-        _kategori = kategori;
-        // Kategori yang terpilih sudah dihapus -> kembali ke grid.
-        if (_katId != null && _katId! >= 0 && !kategori.any((k) => k['id'] == _katId)) _katId = null;
         _bahan = bahan;
         _biayaDasar = biaya;
+        _kategori = kategori;
         _loading = false;
         _error = null;
       });
@@ -65,6 +60,39 @@ class _KasirScreenState extends State<KasirScreen> {
       });
     }
   }
+
+  String _namaKategoriMenu(Menu m) {
+    final k = (m.kategori ?? '').trim();
+    return k.isEmpty ? _lainnya : k;
+  }
+
+  /// Kategori yang punya menu aktif, urut sesuai pengaturan Kelola > Kategori.
+  List<String> get _kategoriTampil {
+    final adaMenu = <String, String>{}; // huruf kecil -> nama asli
+    for (final m in _menus) {
+      final k = _namaKategoriMenu(m);
+      adaMenu.putIfAbsent(k.toLowerCase(), () => k);
+    }
+    final out = <String>[];
+    for (final k in _kategori) {
+      final nama = k['nama'] as String;
+      if (adaMenu.remove(nama.toLowerCase()) != null) out.add(nama);
+    }
+    final sisa = adaMenu.entries.where((e) => e.key != _lainnya.toLowerCase()).map((e) => e.value);
+    out.addAll(sisa);
+    if (adaMenu.containsKey(_lainnya.toLowerCase())) out.add(_lainnya);
+    return out;
+  }
+
+  /// Kategori yang sedang dibuka ('' = daftar kategori). Kategori yang sudah
+  /// tidak punya menu (mis. setelah dihapus) otomatis kembali ke daftar kategori.
+  String get _pilihAktif {
+    if (_pilih.isEmpty || _pilih == _semua || _pilih == _prasmanan) return _pilih;
+    return _kategoriTampil.contains(_pilih) ? _pilih : '';
+  }
+
+  List<Menu> _menuDalam(String kategori) =>
+      _menus.where((m) => _namaKategoriMenu(m).toLowerCase() == kategori.toLowerCase()).toList();
 
   Map<int, Bahan> get _bahanMap => {for (final b in _bahan) b.id!: b};
   List<Bahan> get _bahanPrasmanan =>
@@ -106,6 +134,7 @@ class _KasirScreenState extends State<KasirScreen> {
           biayaDasar: _biayaDasar,
           awal: awal,
           grupVariasi: grupVariasi,
+          opsiSeblak: m?.opsiSeblak ?? true,
           sisaStok: (id) => _sisaStok(id, kecuali: awal),
         ),
       ),
@@ -290,12 +319,18 @@ class _KasirScreenState extends State<KasirScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final aktif = _pilihAktif;
     return PopScope(
-      canPop: _katId == null || _mode != 0,
+      canPop: aktif.isEmpty,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) setState(() => _katId = null);
+        if (!didPop) setState(() => _pilih = ''); // tombol kembali -> daftar kategori
       },
-      child: Scaffold(
+      child: _halaman(aktif),
+    );
+  }
+
+  Widget _halaman(String aktif) {
+    return Scaffold(
       appBar: AppBar(
         title: const Text('Kasir'),
         actions: [
@@ -316,121 +351,115 @@ class _KasirScreenState extends State<KasirScreen> {
           : _error != null
               ? Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(_error!)))
               : Column(children: [
-                  Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: SegmentedButton<int>(
-                      segments: const [
-                        ButtonSegment(value: 0, label: Text('Menu'), icon: Icon(Icons.restaurant_menu)),
-                        ButtonSegment(value: 1, label: Text('Prasmanan'), icon: Icon(Icons.ramen_dining)),
-                      ],
-                      selected: {_mode},
-                      onSelectionChanged: (s) => setState(() => _mode = s.first),
-                    ),
-                  ),
-                  Expanded(child: _mode == 0 ? _daftarMenu() : _panelPrasmanan()),
+                  if (aktif.isNotEmpty) _headerKategori(aktif),
+                  Expanded(child: aktif.isEmpty ? _daftarKategori() : _isiKategori()),
                   _barKeranjang(),
                 ]),
-    ));
+    );
   }
 
-  List<Menu> get _menuTampil {
-    if (_katId == _kSemua) return _menus;
-    if (_katId == _kTanpa) return _menus.where((m) => m.kategoriId == null).toList();
-    return _menus.where((m) => m.kategoriId == _katId).toList();
+  /// Halaman awal kasir: daftar KATEGORI. Menu baru tampil setelah kategori dipilih.
+  Widget _daftarKategori() {
+    final kat = _kategoriTampil;
+    final kartu = <Widget>[
+      for (final k in kat)
+        _kartuKategori(k, '${_menuDalam(k).length} menu', Icons.restaurant_menu, () => setState(() => _pilih = k)),
+      if (kat.length > 1)
+        _kartuKategori('Semua menu', '${_menus.length} menu', Icons.apps, () => setState(() => _pilih = _semua)),
+      _kartuKategori('Prasmanan', 'Pilih topping bebas', Icons.ramen_dining, () => setState(() => _pilih = _prasmanan)),
+    ];
+    return Column(children: [
+      if (_menus.isEmpty)
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 12, 16, 0),
+          child: Text('Belum ada menu aktif. Tambah di Kelola > Menu.', textAlign: TextAlign.center),
+        ),
+      Expanded(
+        child: GridView.count(
+          crossAxisCount: 2,
+          padding: const EdgeInsets.all(12),
+          mainAxisSpacing: 10,
+          crossAxisSpacing: 10,
+          childAspectRatio: 1.45,
+          children: kartu,
+        ),
+      ),
+    ]);
   }
 
-  Widget _daftarMenu() {
-    if (_menus.isEmpty) return const Center(child: Text('Belum ada menu aktif. Tambah di tab Kelola.'));
-    // Belum ada menu yang dikategorikan: tampilkan daftar biasa (perilaku lama).
-    if (!_menus.any((m) => m.kategoriId != null)) return _listMenu(_menus);
-    return _katId == null ? _gridKategori() : _isiKategori();
-  }
-
-  Widget _listMenu(List<Menu> list) => ListView.separated(
-        itemCount: list.length,
-        separatorBuilder: (_, __) => const Divider(height: 1),
-        itemBuilder: (_, i) {
-          final m = list[i];
-          return ListTile(
-            title: Text(m.nama, style: const TextStyle(fontWeight: FontWeight.w600)),
-            subtitle: Text(rupiah(m.hargaJual)),
-            trailing: const Icon(Icons.add_circle, color: Colors.deepOrange, size: 30),
-            onTap: () => _buka(menu: m),
-          );
-        },
+  Widget _kartuKategori(String judul, String keterangan, IconData ikon, VoidCallback onTap) => Card(
+        margin: EdgeInsets.zero,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(ikon, size: 30, color: Colors.deepOrange),
+              const SizedBox(height: 6),
+              Text(judul,
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+              Text(keterangan, style: const TextStyle(fontSize: 12)),
+            ]),
+          ),
+        ),
       );
 
-  IconData _ikonKategori(String nama) {
-    final kata = nama.toLowerCase().split(RegExp(r'\s+'));
-    bool ada(List<String> k) => kata.any(k.contains);
-    if (ada(['semua'])) return Icons.apps;
-    if (ada(['tanpa'])) return Icons.label_off_outlined;
-    if (ada(['es', 'teh', 'kopi', 'jus', 'minuman', 'susu'])) return Icons.local_drink;
-    if (ada(['seblak', 'mie', 'bakso', 'soto'])) return Icons.ramen_dining;
-    if (ada(['jajanan', 'snack', 'camilan', 'gorengan'])) return Icons.cookie;
-    return Icons.restaurant_menu;
-  }
-
-  Widget _gridKategori() {
-    final kartu = <({int id, String nama, int jumlah})>[
-      (id: _kSemua, nama: 'Semua menu', jumlah: _menus.length),
-      for (final k in _kategori)
-        if (_menus.any((m) => m.kategoriId == k['id']))
-          (
-            id: k['id'] as int,
-            nama: '${k['nama']}',
-            jumlah: _menus.where((m) => m.kategoriId == k['id']).length
-          ),
-      if (_menus.any((m) => m.kategoriId == null))
-        (id: _kTanpa, nama: 'Tanpa kategori', jumlah: _menus.where((m) => m.kategoriId == null).length),
-    ];
-    return GridView.count(
-      crossAxisCount: 2,
-      padding: const EdgeInsets.all(12),
-      mainAxisSpacing: 10,
-      crossAxisSpacing: 10,
-      childAspectRatio: 1.35,
-      children: [
-        for (final k in kartu)
-          Card(
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(
-              onTap: () => setState(() {
-                _katId = k.id;
-                _katNama = k.nama;
-              }),
-              child: Padding(
-                padding: const EdgeInsets.all(10),
-                child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                  Icon(_ikonKategori(k.nama), size: 34, color: Colors.deepOrange),
-                  const SizedBox(height: 6),
-                  Text(k.nama,
-                      textAlign: TextAlign.center,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                  Text('${k.jumlah} menu', style: const TextStyle(fontSize: 12)),
-                ]),
-              ),
-            ),
-          ),
-      ],
+  /// Judul + tombol kembali ke daftar kategori.
+  Widget _headerKategori(String aktif) {
+    final judul = aktif == _semua ? 'Semua menu' : (aktif == _prasmanan ? 'Prasmanan' : aktif);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 4, 12, 0),
+      child: Row(children: [
+        IconButton(
+          tooltip: 'Kembali ke kategori',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => setState(() => _pilih = ''),
+        ),
+        Expanded(
+          child: Text(judul, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        ),
+      ]),
     );
   }
 
   Widget _isiKategori() {
-    final list = _menuTampil;
-    return Column(children: [
-      ListTile(
-        dense: true,
-        leading: const Icon(Icons.arrow_back),
-        title: Text('$_katNama • ${list.length} menu', style: const TextStyle(fontWeight: FontWeight.bold)),
-        onTap: () => setState(() => _katId = null),
-      ),
-      const Divider(height: 1),
-      Expanded(child: _listMenu(list)),
-    ]);
+    final aktif = _pilihAktif;
+    if (aktif == _prasmanan) return _panelPrasmanan();
+    if (_menus.isEmpty) {
+      return const Center(
+          child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Text('Belum ada menu aktif. Tambah di Kelola > Menu.', textAlign: TextAlign.center)));
+    }
+    if (aktif == _semua) {
+      return ListView(children: [
+        for (final k in _kategoriTampil) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+            child: Text(k, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+          ),
+          for (final m in _menuDalam(k)) _barisMenu(m),
+        ],
+      ]);
+    }
+    final list = _menuDalam(aktif);
+    return ListView.separated(
+      itemCount: list.length,
+      separatorBuilder: (_, __) => const Divider(height: 1),
+      itemBuilder: (_, i) => _barisMenu(list[i]),
+    );
   }
+
+  Widget _barisMenu(Menu m) => ListTile(
+        title: Text(m.nama, style: const TextStyle(fontWeight: FontWeight.w600)),
+        subtitle: Text(rupiah(m.hargaJual)),
+        trailing: const Icon(Icons.add_circle, color: Colors.deepOrange, size: 30),
+        onTap: () => _buka(menu: m),
+      );
 
   Widget _panelPrasmanan() {
     final list = _bahanPrasmanan;
@@ -514,6 +543,7 @@ class ItemEditorPage extends StatefulWidget {
   final CartItem? awal;
   final double Function(int bahanId) sisaStok;
   final List<VariasiGrup> grupVariasi;
+  final bool opsiSeblak;
 
   const ItemEditorPage({
     super.key,
@@ -525,6 +555,7 @@ class ItemEditorPage extends StatefulWidget {
     required this.awal,
     required this.sisaStok,
     this.grupVariasi = const [],
+    this.opsiSeblak = true,
   });
 
   @override
@@ -547,6 +578,10 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
   // Bila menu punya variasi, Level/Kuah/Rasa/Topping lama disembunyikan
   // (digantikan kelompok variasi yang diatur di Kelola > Variasi).
   bool get _pakaiVariasi => widget.grupVariasi.isNotEmpty;
+
+  /// Opsi khas seblak (topping lama, Level pedas, Kuah, Rasa): hanya untuk prasmanan atau
+  /// menu dari kategori yang opsi seblaknya diaktifkan, dan bila menu tidak punya variasi.
+  bool get _legacy => !_pakaiVariasi && (_prasmanan || widget.opsiSeblak);
 
   bool get _prasmanan => widget.menu == null;
 
@@ -588,7 +623,7 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
         resepDihapus: {..._hapus},
         topping: [
           for (final b in widget.bahanPrasmanan)
-            if (!_pakaiVariasi && (_pick[b.id!] ?? 0) > 0) ToppingDipilih(b, _pick[b.id!]!),
+            if (_legacy && (_pick[b.id!] ?? 0) > 0) ToppingDipilih(b, _pick[b.id!]!),
         ],
         biayaDasar: widget.biayaDasar,
         levelPedas: _level.round(),
@@ -598,7 +633,7 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
         catatan: _catatanCtl.text,
         qty: _qty,
         variasi: susunPilihanVariasi(widget.grupVariasi, _vPilih),
-        tampilkanLegacy: !_pakaiVariasi,
+        tampilkanLegacy: _legacy,
       );
 
   List<String> _kurang(CartItem c) {
@@ -660,8 +695,8 @@ class _ItemEditorPageState extends State<ItemEditorPage> {
               ketukVariasi(context, g, o, _vPilih);
               setState(() {});
             },
-          )
-        else ...[
+          ),
+        if (_legacy) ...[
         _judul(_prasmanan ? 'Pilih topping / bahan' : 'Tambah / ganti topping (opsional)'),
         if (widget.bahanPrasmanan.isEmpty)
           const Text('Belum ada bahan prasmanan (atur di Kelola > Bahan).',
