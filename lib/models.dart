@@ -94,7 +94,18 @@ class Menu {
   final String? kategori; // nama kategori (dari tabel kategori_menu)
   final int? kategoriId;
   final int hargaJual;
-  const Menu({this.id, required this.nama, this.kategori, this.kategoriId, required this.hargaJual});
+  /// Menentukan apakah opsi legacy Seblak (Level/Kuah/Rasa/topping) ditampilkan.
+  /// Nilai default true menjaga kompatibilitas data menu lama tanpa kolom ini.
+  final bool opsiSeblak;
+
+  const Menu({
+    this.id,
+    required this.nama,
+    this.kategori,
+    this.kategoriId,
+    required this.hargaJual,
+    this.opsiSeblak = true,
+  });
 
   factory Menu.fromMap(Map<String, Object?> m) => Menu(
         id: m['id'] as int?,
@@ -102,6 +113,7 @@ class Menu {
         kategori: m['kategori'] as String?,
         kategoriId: m['kategori_id'] as int?,
         hargaJual: (m['harga_jual'] as num?)?.toInt() ?? 0,
+        opsiSeblak: ((m['opsi_seblak'] as num?)?.toInt() ?? 1) == 1,
       );
 }
 
